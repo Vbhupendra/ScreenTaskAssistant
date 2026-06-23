@@ -1,0 +1,12 @@
+pyaudio
+mss
+opencv-python
+google-genai
+vosk
+numpy
+pyttsx3
+pillow
+pystray
+plyer
+Pillow
+python-dotenv
