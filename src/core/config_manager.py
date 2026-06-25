@@ -26,32 +26,49 @@ def get_config_path() -> str:
 
 def _ensure_config_file() -> str:
     """
-    Ensures the config directory and config.json exist.
-    If config.json is missing, creates it with a blank default template.
-    Returns the full path to config.json.
-    """
-    config_dir = get_config_dir()
-    config_path = get_config_path()
+    Guarantees the config directory and config.json both exist before any
+    caller tries to read from them. Follows the strict 4-step sequence:
 
-    # Create the directory tree if it doesn't already exist
+      Step 1 — Resolve config_dir from APPDATA (Windows) or ~/.config (other).
+      Step 2 — os.makedirs to build the full folder tree.
+      Step 3 — If config.json is absent, write a blank default immediately.
+      Step 4 — Return the guaranteed-valid path to the caller.
+
+    Raises RuntimeError if the file still cannot be created (e.g. permissions),
+    so the caller is never handed a path that doesn't exist on disk.
+    """
+    # Step 1: Resolve the directory path
+    config_dir = get_config_dir()
+    config_file_path = os.path.join(config_dir, "config.json")
+
+    # Step 2: Build the full folder structure — safe no-op if already present
     os.makedirs(config_dir, exist_ok=True)
 
-    # Bootstrap a fresh config file if one is not yet present
-    if not os.path.exists(config_path):
+    # Step 3: Create config.json with a blank default if it does not yet exist
+    if not os.path.exists(config_file_path):
         try:
-            with open(config_path, "w", encoding="utf-8") as f:
+            with open(config_file_path, "w") as f:
                 json.dump({"GEMINI_API_KEY": ""}, f, indent=4)
-            print(f">> Config: Created fresh config file at {config_path}")
+            print(f">> Config: Created fresh config file at {config_file_path}")
         except Exception as e:
-            print(f"Error creating default config file: {e}")
+            raise RuntimeError(
+                f"Config: Could not create {config_file_path} — {e}"
+            ) from e
 
-    return config_path
+    # Step 4: File is guaranteed to exist — return the path
+    return config_file_path
 
 def load_api_key() -> str:
     """
     Loads the API key from the local OS-compliant config file.
-    Auto-creates the file with a blank template if it doesn't exist.
+
+    Calls _ensure_config_file() first, which runs the full 4-step init
+    sequence (resolve → makedirs → create-if-missing → return path).
+    Only after that sequence completes successfully does this function
+    open and read the JSON, so a FileNotFoundError on fresh installs is
+    impossible.
     """
+    # _ensure_config_file() guarantees the file exists before we read it
     config_path = _ensure_config_file()
     try:
         with open(config_path, "r", encoding="utf-8") as f:
