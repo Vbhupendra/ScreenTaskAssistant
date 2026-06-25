@@ -24,7 +24,7 @@ Right-click the tray icon and select **Exit**.
 The system implements a **Strict Wake-Word Trigger**. It will only process your commands if you say the word:
 
 > "**BlackBox**"
-
+00000000000000000000000000
 ### Examples:
 *   "**BlackBox**, what is on my screen"
 *   "**BlackBox**, look at this code and explain it"

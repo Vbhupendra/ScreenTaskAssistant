@@ -1,4 +1,5 @@
 import os
+import time
 from google import genai
 from google.genai import types
 from typing import Optional
@@ -14,7 +15,7 @@ SYSTEM_INSTRUCTION = (
     "Whenever the user asks a question or triggers an analysis:\n"
     "1. Thoroughly inspect the screenshot for any error messages, compiler bugs, crash dumps, exceptions, broken user interfaces, typos, or security concerns.\n"
     "2. If you notice ANY problem, clearly identify it, explain the root cause, and proactively generate a complete, step-by-step solution or code fix.\n"
-    "3. Keep your answers concise, direct, and action-oriented. Because your answers are spoken out loud to the user via TTS, do not read out long blocks of code unless explicitly requested. Focus on explaining the logic and providing the direct fix."
+    "3. Keep your answers direct, action-oriented, and complete. Ensure you provide the exact code changes, command line instructions, or step-by-step resolution needed to fix the issue."
 )
 
 # Ordered fallback chain: primary model first, then backups
@@ -32,6 +33,7 @@ class ReasoningEngine:
     def __init__(self, api_key: str = None):
         self._initial_api_key = api_key
         self.client = None
+        self._failed_models_cooldown = {} # model_name -> cooldown_expiration_timestamp
         try:
             self._get_client()
         except Exception as e:
@@ -49,8 +51,13 @@ class ReasoningEngine:
             
         if not hasattr(self, '_current_key') or self._current_key != key or not self.client:
             self._current_key = key
-            print(">> Reasoning Engine: (Re)initializing client with dynamic API key...")
-            self.client = genai.Client(api_key=key)
+            print(">> Reasoning Engine: (Re)initializing client with dynamic API key and fail-fast retry options...")
+            self.client = genai.Client(
+                api_key=key,
+                http_options=types.HttpOptions(
+                    retry_options=types.HttpRetryOptions(attempts=1)
+                )
+            )
             
         return self.client
 
@@ -58,13 +65,24 @@ class ReasoningEngine:
         """Returns True if this error warrants trying a fallback model."""
         return any(trigger in error_str for trigger in FALLBACK_TRIGGERS)
 
+    def _get_active_models(self) -> list:
+        """Finds active models that are not currently cooling down."""
+        now = time.time()
+        active = [m for m in MODEL_FALLBACK_CHAIN if now >= self._failed_models_cooldown.get(m, 0)]
+        if not active:
+            print(">> All fallback models are on cooldown! Resetting cooldowns.")
+            self._failed_models_cooldown.clear()
+            active = MODEL_FALLBACK_CHAIN
+        return active
+
     def analyze(self, image_bytes: Optional[bytes], prompt: str) -> str:
         """Standard analysis, returns full text. Tries each model in fallback chain."""
         contents = self._prepare_inputs(image_bytes, prompt)
         client = self._get_client()
         config = types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
 
-        for model in MODEL_FALLBACK_CHAIN:
+        active_models = self._get_active_models()
+        for model in active_models:
             try:
                 print(f">> Using model: {model}")
                 response = client.models.generate_content(
@@ -76,7 +94,8 @@ class ReasoningEngine:
             except Exception as e:
                 error_str = str(e)
                 if self._should_fallback(error_str):
-                    print(f">> Model '{model}' unavailable (503/quota). Trying next fallback...")
+                    print(f">> Model '{model}' unavailable (503/quota). Putting on cooldown and trying next fallback...")
+                    self._failed_models_cooldown[model] = time.time() + 300
                     continue
                 else:
                     print(f"Reasoning Error: {e}")
@@ -92,7 +111,8 @@ class ReasoningEngine:
         client = self._get_client()
         config = types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
 
-        for model in MODEL_FALLBACK_CHAIN:
+        active_models = self._get_active_models()
+        for model in active_models:
             try:
                 print(f">> Using model: {model}")
                 response = client.models.generate_content_stream(
@@ -109,7 +129,8 @@ class ReasoningEngine:
             except Exception as e:
                 error_str = str(e)
                 if self._should_fallback(error_str):
-                    print(f">> Model '{model}' unavailable (503/quota). Trying next fallback...")
+                    print(f">> Model '{model}' unavailable (503/quota). Putting on cooldown and trying next fallback...")
+                    self._failed_models_cooldown[model] = time.time() + 300
                     continue
                 else:
                     print(f"Streaming Reasoning Error: {e}")
@@ -121,7 +142,17 @@ class ReasoningEngine:
         yield "All AI models are temporarily unavailable. Please try again in a moment."
 
     def _prepare_inputs(self, image_bytes: Optional[bytes], prompt: str) -> list:
-        inputs = [prompt]
+        enhanced_prompt = (
+            f"User Command/Question: {prompt}\n\n"
+            "INSTRUCTION FOR YOU:\n"
+            "Thoroughly analyze the screenshot. If there is ANY error, bug, exception, "
+            "compiler issue, or problem visible, you MUST:\n"
+            "1. Explicitly identify and describe the problem.\n"
+            "2. Explain the root cause of the issue.\n"
+            "3. Proactively generate a complete, direct solution or code fix to resolve it.\n"
+            "Format your output in clean, structured Markdown using headers (##), bullet lists (-), bold text (**text**), and code blocks (```python ... ```) so that the formatting renders properly in the user's chat panel."
+        )
+        inputs = [enhanced_prompt]
         if image_bytes:
             image = Image.open(io.BytesIO(image_bytes))
             inputs.append(image)

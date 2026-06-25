@@ -45,7 +45,6 @@ class VoiceOutput:
         buffer = ""
         print("Assistant: ", end="", flush=True)
         if overlay:
-            overlay.clear()
             overlay.show()
         
         delimiters = [". ", "? ", "! ", "\n"]

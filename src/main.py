@@ -116,8 +116,12 @@ class BlackBoxAgent:
 
     def _on_wake_word(self, raw_text: str):
         """Callback triggered by AudioWorker when 'BlackBox' is heard."""
-        # 1. Immediate Visual Feedback (Red)
+        # 1. Immediate Visual Feedback (Red status on Tray and Overlay)
         self.tray.update_state('listening')
+        self.overlay.clear()
+        self.overlay.show()
+        self.overlay.update_status('listening')
+        self.overlay.append("🎙️ **Listening for command...**\n")
         
         # 2. Context Injection: Snap the screen IMMEDIATELY
         # This captures what the user is looking at BEFORE they finish the sentence
@@ -137,9 +141,6 @@ class BlackBoxAgent:
                 wait_time = 3.0
                 start_time = time.time()
                 
-                # Removed clear_queue here because the user might have already started
-                # speaking the follow-up command, and we don't want to cut them off.
-                    
                 while time.time() - start_time < wait_time:
                     text = self.ear.get_command()
                     if text:
@@ -155,11 +156,17 @@ class BlackBoxAgent:
             
             print(f">> Triggered! Command: {clean_command}")
             
+            # Show the command being processed and change status to THINKING
+            self.overlay.clear()
+            self.overlay.append(f"🔍 **Command:** {clean_command}\n\n")
+            self.overlay.append("⚡ **Thinking...**\n")
+            
             # Pause listening to avoid feedback or duplicate triggers
             self.audio_worker.pause_listening()
             
-            # Update Tray: Thinking (Blue Pulse)
+            # Update Tray & Overlay: Thinking (Blue Pulse)
             self.tray.update_state('thinking')
+            self.overlay.update_status('thinking')
             
             # Use pre-captured context frame or capture a fresh one if needed
             urgent = self._is_urgent(clean_command)
@@ -172,8 +179,14 @@ class BlackBoxAgent:
             print(f">> Thinking (Gemini 3.5 Flash)...")
             stream = self.brain.analyze_stream(image_bytes=frame, prompt=clean_command)
             
+            # Prepare overlay before streaming: clear the "Thinking..." text and keep Query
+            self.overlay.clear()
+            self.overlay.append(f"🔍 **Command:** {clean_command}\n")
+            self.overlay.append("─" * 40 + "\n\n")
+            
             # Switch to speaking state
             self.tray.update_state('speaking')
+            self.overlay.update_status('speaking')
             self.speaker.speak_stream(stream, overlay=self.overlay)
             
             # 5. Wait for speaker to finish before resetting
@@ -184,6 +197,7 @@ class BlackBoxAgent:
             time.sleep(0.5) # Final grace period
             self.context_frame = None # Clear context
             self.tray.update_state('idle')
+            self.overlay.update_status('idle')
             self.audio_worker.resume_listening()
             
         except Exception as e:
