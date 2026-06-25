@@ -1,21 +1,28 @@
 import os
 import json
-import platform
 
 def get_config_dir() -> str:
-    """Returns the platform-specific directory for configuration data."""
-    if platform.system() == "Windows":
-        appdata = os.environ.get("APPDATA")
-        if not appdata:
-            appdata = os.path.expanduser("~/AppData/Roaming")
-        return os.path.join(appdata, "ScreenTaskAssistant")
+    """Returns the platform-specific directory for configuration data.
+
+    Uses APPDATA on Windows (os.name == 'nt') and ~/.config on Mac/Linux,
+    with a safe fallback if the environment variable is not set.
+    """
+    if os.name == 'nt':
+        base_dir = os.getenv('APPDATA') or os.path.expanduser('~/AppData/Roaming')
     else:
-        home = os.path.expanduser("~")
-        return os.path.join(home, ".config", "screentaskassistant")
+        base_dir = os.path.expanduser('~/.config')
+    return os.path.join(base_dir, 'ScreenTaskAssistant')
 
 def get_config_path() -> str:
-    """Returns the full path to config.json in the OS-compliant local directory."""
-    return os.path.join(get_config_dir(), "config.json")
+    """Returns the full path to config.json in the OS-compliant local directory.
+
+    Also guarantees the parent directory exists on every call, so fresh
+    installations (or any code path that bypasses _ensure_config_file) can
+    never crash with a FileNotFoundError.
+    """
+    config_dir = get_config_dir()
+    os.makedirs(config_dir, exist_ok=True)  # safe no-op if already present
+    return os.path.join(config_dir, "config.json")
 
 def _ensure_config_file() -> str:
     """
