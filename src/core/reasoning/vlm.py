@@ -52,11 +52,10 @@ class ReasoningEngine:
             
         if not hasattr(self, '_current_key') or self._current_key != key or not self.client:
             self._current_key = key
-            print(">> Reasoning Engine: (Re)initializing client (fail-fast: 1 attempt, 10s hard timeout)...")
+            print(">> Reasoning Engine: (Re)initializing client (fail-fast: 1 attempt)...")
             self.client = genai.Client(
                 api_key=key,
                 http_options=types.HttpOptions(
-                    timeout=10000,  # 10-second hard cap per model attempt (minimum allowed deadline is 10s)
                     retry_options=types.HttpRetryOptions(attempts=1)
                 )
             )
