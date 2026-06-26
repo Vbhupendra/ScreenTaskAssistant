@@ -42,12 +42,15 @@ class VoiceOutput:
 
     def speak_stream(self, generator, overlay=None):
         """Consume a text generator and speak as chunks arrive."""
+        import re
         buffer = ""
         print("Assistant: ", end="", flush=True)
         if overlay:
             overlay.show()
         
-        delimiters = [". ", "? ", "! ", "\n"]
+        # Regex that splits on sentence-ending punctuation followed by a space or newline.
+        # Using a capturing group so the delimiter is kept at the end of each sentence.
+        sentence_end_pattern = re.compile(r'(?<=[.?!\n])\s+')
         
         for chunk in generator:
             if not self.running: break
@@ -58,25 +61,22 @@ class VoiceOutput:
                 overlay.append(chunk)
             buffer += chunk
             
-            # Check for legitimate sentence endings (punctuation + space)
-            # This prevents splitting on abbreviations like "Mr." or "v1.5"
-            for d in delimiters:
-                if d in buffer:
-                    parts = buffer.split(d)
-                    # Speak all complete sentences
-                    for part in parts[:-1]:
-                        text = part.strip()
-                        if text:
-                            self.speak(text + d.strip()) # Add back punctuation for intonation
-                    
-                    # Keep the last part (incomplete sentence)
-                    buffer = parts[-1]
-                    break
+            # Split on ALL sentence boundaries found in the buffer at once
+            parts = sentence_end_pattern.split(buffer)
+            
+            if len(parts) > 1:
+                # All parts except the last are complete sentences — speak them
+                for sentence in parts[:-1]:
+                    text = sentence.strip()
+                    if text:
+                        self.speak(text)
+                # Keep the trailing incomplete sentence in the buffer
+                buffer = parts[-1]
         
-        # Catch any final text
+        # Speak any remaining text after the stream ends
         if buffer.strip():
             self.speak(buffer.strip())
-        print() # Newline after stream ends
+        print()  # Newline after stream ends
 
     def stop(self):
         """Stop the speaker thread."""

@@ -1,56 +1,48 @@
-import os
-# Placeholder for Google Generative AI or OpenAI
-# import google.generativeai as genai
+# =============================================================================
+# llm.py  —  ARCHIVED / DEAD STUB  (Do NOT use in production)
+# =============================================================================
+#
+# This file is an early-architecture placeholder from before the Gemini VLM
+# integration was built. It contains MOCK responses only and is NOT connected
+# to any real AI model.
+#
+# The LIVE reasoning engine used by the application is:
+#   src/core/reasoning/vlm.py  →  ReasoningEngine (Gemini-powered, multimodal)
+#
+# This file is kept only for historical reference. No code in the active
+# application imports from here. If you accidentally import this file, you will
+# get silent mock responses instead of real AI — which would be very confusing.
+#
+# =============================================================================
 
-class ReasoningEngine:
+import os
+
+
+class _MockReasoningEngine:
+    """
+    INACTIVE MOCK ENGINE — For historical/reference purposes only.
+    Use src.core.reasoning.vlm.ReasoningEngine for all real inference.
+    """
     def __init__(self):
-        # self.api_key = os.getenv("GEMINI_API_KEY")
-        # if self.api_key:
-        #     genai.configure(api_key=self.api_key)
         self.history = []
 
     def think(self, context: dict) -> str:
         """
-        Process the context (audio, screen) and determine the action.
-        
-        Args:
-            context (dict): Contains 'text' (user audio) and 'image_path' (screenshot).
-            
-        Returns:
-            str: The response text to speak.
+        Mock reasoning — returns hardcoded responses.
+        NOT connected to any AI model.
         """
-        user_text = context.get('text', '')
-        image_path = context.get('image_path')
-        
-        self.history.append({"role": "user", "content": user_text})
-        if image_path:
-            self.history.append({"role": "system", "content": f"User provided image: {image_path}"})
-
-        # Mock Logic for now (Enable Real Logic when API Key is present)
-        response_text = self._mock_response(user_text)
-        
-        # Real Integration Placeholder:
-        # model = genai.GenerativeModel('gemini-1.5-flash')
-        # response = model.generate_content([user_text, PIL.Image.open(image_path)])
-        # response_text = response.text
-
-        self.history.append({"role": "assistant", "content": response_text})
-        return response_text
+        user_text = context.get('text', '').lower()
+        if "screen" in user_text or "look" in user_text:
+            return "[MOCK] Analyzing your screen..."
+        elif "hello" in user_text or "hi" in user_text:
+            return "[MOCK] Hello! This is a mock response."
+        return f"[MOCK] Heard: {user_text}"
 
     def _mock_response(self, text: str) -> str:
-        text = text.lower()
-        if "screen" in text or "look" in text:
-            return "I am analyzing your screen. It looks like you are coding the Black Box AI assistant."
-        elif "hello" in text or "hi" in text:
-            return "Hello! How can I help you with your desktop tasks today?"
-        elif "time" in text:
-            return "I can't tell time yet, but I'm learning."
-        
-        return f"I heard: {text}. I am standing by."
+        return self.think({'text': text})
 
-# Global Instance
-engine = ReasoningEngine()
 
-def think(context):
-    return engine.think(context)
-
+# NOTE: No global instance or module-level think() function is exported.
+# The old code had `engine = ReasoningEngine()` and `def think(context):`
+# at module level, which was dangerous because any accidental import would
+# activate mock mode. That pattern has been removed intentionally.

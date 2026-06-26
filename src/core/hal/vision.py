@@ -73,8 +73,10 @@ class SoftwareCapture:
                     diff = 0
                     curr_data = list(small_curr.getdata())
                     last_data = list(small_last.getdata())
+                    # Use actual channel count from pixel data (BGRA = 4, RGB = 3)
+                    num_channels = len(curr_data[0]) if curr_data and isinstance(curr_data[0], tuple) else 3
                     for p1, p2 in zip(curr_data, last_data):
-                        diff += abs(p1[0]-p2[0]) + abs(p1[1]-p2[1]) + abs(p1[2]-p2[2])
+                        diff += sum(abs(p1[i] - p2[i]) for i in range(min(3, num_channels)))
                     mean_diff = diff / (64 * 64 * 3)
                     if mean_diff <= 255 * 0.05:
                         return None
@@ -167,9 +169,18 @@ class PeripheralCapture:
 
 
 def get_vision_provider(source_type: str = 'DISPLAY', index: int = 0) -> VisionProvider:
-    """Factory to get the appropriate vision provider."""
+    """Factory to get the appropriate vision provider.
+
+    Args:
+        source_type: 'DISPLAY' for screen capture, 'CAMERA' for USB/HDMI device.
+        index: 0-based index. For DISPLAY, 0=primary, 1=secondary, etc.
+                mss uses a 1-based list (monitors[1] is primary), so we always
+                add 1 to convert correctly for all monitor indices.
+    """
     if source_type == 'DISPLAY':
-        return SoftwareCapture(monitor_index=index + 1 if index == 0 else index)
+        # Always add 1: user's 0-based index → mss's 1-based monitor list
+        # e.g. index=0 → monitor_index=1 (primary), index=1 → monitor_index=2 (secondary)
+        return SoftwareCapture(monitor_index=index + 1)
     elif source_type == 'CAMERA':
         return PeripheralCapture(device_index=index)
     else:

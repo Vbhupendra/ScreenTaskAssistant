@@ -38,6 +38,7 @@ from src.core.hal.audio_worker import AudioWorker
 class BlackBoxAgent:
     def __init__(self):
         self.running = True
+        self.context_frame = None  # Pre-initialize to prevent AttributeError before first wake-word
         
         # 1. Initialize Components
         print(f">> Initializing {APP_NAME}...")
