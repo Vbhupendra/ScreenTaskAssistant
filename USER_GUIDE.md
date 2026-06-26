@@ -2,12 +2,18 @@
 
 ## Running the System (Background Mode)
 
-The Black Box AI Assistant now runs as a **System Tray Application**. This allows it to stay active in the background without needing an open terminal.
+The Black Box AI Assistant runs as a **System Tray Application**. This allows it to stay active in the background without needing an open terminal.
 
-To start the assistant:
-1.  Run the command: `python src/main.py`.
-2.  Look for the **Green Icon** in your system tray (Windows Taskbar / macOS Menu Bar).
-3.  The system will notify you that it is online.
+### Option A: Running from Precompiled Executable (Recommended)
+1. Download the ZIP file containing `ScreenTaskAssistant.exe` from the latest GitHub build artifact.
+2. Extract the ZIP and double-click `ScreenTaskAssistant.exe` to launch it.
+3. Look for the **Green Icon** in your system tray (Windows Taskbar).
+4. The system will notify you that it is online.
+
+### Option B: Running from Source
+1. Ensure all dependencies are installed: `pip install -r requirements.txt`.
+2. Run the command from the root directory: `python run.py`.
+3. Look for the **Green Icon** in your system tray.
 
 ### Tray Icon Status Indicators
 *   🟢 **Green**: Idle & Listening for the wake word.
@@ -18,6 +24,7 @@ To start the assistant:
 Right-click the tray icon and select **Exit**.
 
 ---
+
 
 ## Interaction & Triggering
 

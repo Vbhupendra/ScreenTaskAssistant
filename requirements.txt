@@ -10,3 +10,4 @@ pystray
 plyer
 Pillow
 python-dotenv
+SpeechRecognition

@@ -110,12 +110,16 @@ class TrayManager:
         self._pulse_thread.start()
 
     def notify(self, title, message):
-        notification.notify(
-            title=title,
-            message=message,
-            app_name="Black Box AI",
-            timeout=5
-        )
+        try:
+            notification.notify(
+                title=title,
+                message=message,
+                app_name="Black Box AI",
+                timeout=5
+            )
+        except Exception as e:
+            print(f"Warning: Notification failed to display: {e}")
+
 
     def run(self):
         self.icon.run()
