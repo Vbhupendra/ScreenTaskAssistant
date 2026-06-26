@@ -23,7 +23,8 @@ from src.config import (
     VISION_DEVICE_INDEX, 
     GOOGLE_API_KEY, 
     WAKE_WORD,
-    APP_NAME
+    APP_NAME,
+    MODEL_NAME
 )
 from src.core.hal.audio import AudioProvider
 from src.core.hal.vision import get_vision_provider
@@ -177,7 +178,7 @@ class BlackBoxAgent:
                 print(">> Warning: No image frame captured. Proceeding with text-only.")
             
             # 4. Stream Reasoning + Output
-            print(f">> Thinking (Gemini 3.5 Flash)...")
+            print(f">> Thinking ({MODEL_NAME})...")
             stream = self.brain.analyze_stream(image_bytes=frame, prompt=clean_command)
             
             # Prepare overlay before streaming: clear the "Thinking..." text and keep Query

@@ -19,10 +19,11 @@ SYSTEM_INSTRUCTION = (
 )
 
 # Ordered fallback chain: primary model first, then backups
+# gemini-2.5-flash is proven fast (~1-2s). gemini-2.0-flash as tertiary backup.
 MODEL_FALLBACK_CHAIN = [
-    MODEL_NAME,           # Primary: gemini-3.5-flash (from config)
-    "gemini-2.5-flash",   # Secondary fallback
-    "gemini-2.0-flash",   # Tertiary fallback
+    MODEL_NAME,           # Primary: gemini-2.5-flash (from config) — 1-2s latency
+    "gemini-2.0-flash",   # Secondary fallback                       — 2-3s latency
+    "gemini-2.0-flash-lite", # Tertiary fallback                    — stable light fallback
 ]
 
 # Errors that should trigger a fallback to the next model
@@ -51,10 +52,11 @@ class ReasoningEngine:
             
         if not hasattr(self, '_current_key') or self._current_key != key or not self.client:
             self._current_key = key
-            print(">> Reasoning Engine: (Re)initializing client with dynamic API key and fail-fast retry options...")
+            print(">> Reasoning Engine: (Re)initializing client (fail-fast: 1 attempt, 10s hard timeout)...")
             self.client = genai.Client(
                 api_key=key,
                 http_options=types.HttpOptions(
+                    timeout=10000,  # 10-second hard cap per model attempt (minimum allowed deadline is 10s)
                     retry_options=types.HttpRetryOptions(attempts=1)
                 )
             )

@@ -24,7 +24,7 @@ The Black Box AI Assistant runs as a **System Tray Application**. This allows it
 Right-click the tray icon and select **Exit**.
 
 ---
-
+For Terminal - python src/main.py
 
 ## Interaction & Triggering
 
