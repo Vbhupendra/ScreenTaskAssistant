@@ -1,16 +1,17 @@
 import os
 import sys
 
-# Get the absolute path of the directory containing main.py
-current_dir = os.path.dirname(os.path.abspath(__file__))
-# Get the parent directory (the root project directory)
-project_root = os.path.dirname(current_dir)
+# Add the project root to sys.path so compiled binaries recognize the 'src'
+# package layout regardless of the working directory at launch time.
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
-# Add both paths to sys.path so PyInstaller can resolve 'src' imports
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+# Also insert the src/ directory itself so bare module names resolve inside
+# PyInstaller's extracted temp tree (belt-and-suspenders for packed .exe).
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
 
 import time
 import threading
