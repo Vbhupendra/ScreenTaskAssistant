@@ -23,10 +23,9 @@ class OverlayWindow:
         self.queue = queue.Queue()
         self.root = None
         self.text_area = None
-        self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        self.thread.start()
+        self._initialize_gui()
 
-    def _run_loop(self):
+    def _initialize_gui(self):
         self.root = tk.Tk()
         self.root.title("BlackBox AI Response Panel")
         
@@ -104,7 +103,7 @@ class OverlayWindow:
         self.title_label.bind("<Button-1>", self._start_drag)
         self.title_label.bind("<B1-Motion>", self._on_drag)
         
-        # ScrolledText responder pane
+        # scrolledText responder pane
         self.text_area = scrolledtext.ScrolledText(
             self.root, 
             wrap=tk.WORD, 
@@ -147,8 +146,11 @@ class OverlayWindow:
         
         # Hide initially
         self.root.withdraw()
-        
-        self.root.mainloop()
+
+    def run(self):
+        """Starts the Tkinter main loop on the main thread."""
+        if self.root:
+            self.root.mainloop()
 
     def _start_drag(self, event):
         self.drag_x = event.x

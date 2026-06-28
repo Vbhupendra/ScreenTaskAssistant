@@ -122,4 +122,7 @@ class TrayManager:
 
 
     def run(self):
-        self.icon.run()
+        # Run pystray in a background thread so the main thread is free for Tkinter
+        self.thread = threading.Thread(target=self.icon.run, daemon=True)
+        self.thread.start()
+

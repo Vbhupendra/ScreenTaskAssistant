@@ -40,7 +40,7 @@ class BlackBoxAgent:
         self.running = True
         self.context_frame = None  # Pre-initialize to prevent AttributeError before first wake-word
         
-        # 1. Initialize Components
+        # 1. Initialize Non-blocking Components
         print(f">> Initializing {APP_NAME}...")
         self.speaker = VoiceOutput()
         self.overlay = OverlayWindow()
@@ -55,53 +55,77 @@ class BlackBoxAgent:
             save_api_key(GOOGLE_API_KEY)
             key = GOOGLE_API_KEY
             
-        if not key:
-            print(">> Intercepting startup: No API key found. Requesting key via overlay UI...")
-            self.key_saved_event = threading.Event()
+        if key:
+            self._init_brain_and_audio(key)
+        else:
+            self.brain = None
+            self.ear = None
+            self.audio_worker = None
             
-            def _on_key_saved(entered_key):
-                if save_api_key(entered_key):
-                    self.key_saved_event.set()
-                    return True
-                return False
-                
-            self.overlay.show_key_input(_on_key_saved)
-            print(">> Waiting for API key entry...")
-            self.key_saved_event.wait()
-            key = load_api_key()
-            
-        self.brain = ReasoningEngine(api_key=key)
-        self.ear = AudioProvider(model_path=VOSK_MODEL_PATH)
-        
         # Initialize Tray with callbacks
         self.tray = TrayManager(
             on_exit_callback=self.stop,
             on_restart_callback=self.restart
         )
-        
-        # 2. Audio Worker
+
+    def _init_brain_and_audio(self, key):
+        """Initializes components requiring a valid API key."""
+        print(">> Initializing AI and Audio engines...")
+        self.brain = ReasoningEngine(api_key=key)
+        self.ear = AudioProvider(model_path=VOSK_MODEL_PATH)
         self.audio_worker = AudioWorker(
             ear_provider=self.ear, 
             callback=self._on_wake_word
         )
 
     def start(self):
-        self.ear.start_listening()
-        self.audio_worker.start()
-        self.speaker.speak(f"{APP_NAME} Pro is active.")
-        self.tray.notify(APP_NAME, "Assistant is online and listening.")
-        
-        # Start tray (Blocks main thread)
+        # Start system tray in background thread
         self.tray.run()
+        
+        from src.core.config_manager import load_api_key, save_api_key
+        key = load_api_key()
+        
+        if key:
+            self.ear.start_listening()
+            self.audio_worker.start()
+            self.speaker.speak(f"{APP_NAME} Pro is active.")
+            self.tray.notify(APP_NAME, "Assistant is online and listening.")
+        else:
+            print(">> Intercepting startup: No API key found. Requesting key via overlay UI...")
+            
+            def _on_key_saved(entered_key):
+                if save_api_key(entered_key):
+                    self._init_brain_and_audio(entered_key)
+                    self.ear.start_listening()
+                    self.audio_worker.start()
+                    self.speaker.speak(f"{APP_NAME} Pro is active.")
+                    self.tray.notify(APP_NAME, "Assistant is online and listening.")
+                    return True
+                return False
+                
+            self.overlay.show_key_input(_on_key_saved)
+            
+        # Start Tkinter event loop (Blocks main thread)
+        self.overlay.run()
 
     def stop(self):
         print(f">> Stopping {APP_NAME}...")
         self.running = False
-        self.audio_worker.stop()
-        self.ear.stop()
+        if hasattr(self, 'audio_worker') and self.audio_worker:
+            self.audio_worker.stop()
+        if hasattr(self, 'ear') and self.ear:
+            self.ear.stop()
         self.vision.cleanup()
         self.speaker.stop()
         print(">> Shutdown Complete.")
+        
+        # Stop Tkinter event loop to allow main thread to exit cleanly
+        if hasattr(self, 'overlay') and self.overlay.root:
+            try:
+                self.overlay.root.quit()
+            except Exception:
+                pass
+                
         # Only exit if not restarting
         if not getattr(self, '_restarting', False):
             sys.exit(0)
