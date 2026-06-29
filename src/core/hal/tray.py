@@ -6,9 +6,11 @@ import threading
 from plyer import notification
 
 class TrayManager:
-    def __init__(self, on_exit_callback, on_restart_callback=None):
+    def __init__(self, on_exit_callback, on_restart_callback=None, on_show_callback=None, on_hide_callback=None):
         self.on_exit_callback = on_exit_callback
         self.on_restart_callback = on_restart_callback
+        self.on_show_callback = on_show_callback
+        self.on_hide_callback = on_hide_callback
         self.icon = None
         self._pulse_thread = None
         self._pulsing = False
@@ -54,9 +56,13 @@ class TrayManager:
 
     def _on_show(self, icon, item):
         self.notify("BlackBox Pro", "Assistant is visible and active.")
+        if self.on_show_callback:
+            self.on_show_callback()
 
     def _on_hide(self, icon, item):
         self.notify("BlackBox Pro", "Assistant running in background.")
+        if self.on_hide_callback:
+            self.on_hide_callback()
 
     def _on_restart(self, icon, item):
         if self.on_restart_callback:

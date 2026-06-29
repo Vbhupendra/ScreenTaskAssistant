@@ -65,7 +65,15 @@ class BlackBoxAgent:
         # Initialize Tray with callbacks
         self.tray = TrayManager(
             on_exit_callback=self.stop,
-            on_restart_callback=self.restart
+            on_restart_callback=self.restart,
+            on_show_callback=self.overlay.show,
+            on_hide_callback=self.overlay.hide
+        )
+
+        # Register overlay action-button callbacks
+        self.overlay.set_callbacks(
+            on_read=self._handle_read_aloud,
+            on_save_report=self._handle_save_report
         )
 
     def _init_brain_and_audio(self, key):
@@ -129,6 +137,61 @@ class BlackBoxAgent:
         # Only exit if not restarting
         if not getattr(self, '_restarting', False):
             sys.exit(0)
+
+    # ── Overlay Action Button Handlers ────────────────────────────────────────
+
+    def _handle_read_aloud(self, text: str):
+        """Called by overlay Read Summary button.
+        Receives clean, code-stripped text and speaks it aloud.
+        Runs on a daemon thread so Tkinter is never blocked.
+        """
+        if not text:
+            return
+        print(">> Read Summary requested. Speaking clean text...")
+        self.speaker.stop_speaking()
+        self.speaker.speak(text)
+
+    def _handle_save_report(self, markdown_text: str):
+        """Called by overlay Save Report button.
+        Opens a native save-file dialog (on the Tkinter main thread via after())
+        and writes the full markdown content to the chosen location.
+        """
+        import datetime
+        from tkinter import filedialog, messagebox
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"BlackBox_Report_{timestamp}.md"
+
+        def _do_save():
+            path = filedialog.asksaveasfilename(
+                title="Save Report",
+                initialfile=default_name,
+                defaultextension=".md",
+                filetypes=[
+                    ("Markdown files", "*.md"),
+                    ("Text files", "*.txt"),
+                    ("All files", "*.*")
+                ]
+            )
+            if not path:
+                return  # User cancelled
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("# BlackBox Pro — Analysis Report\n")
+                    f.write(f"*Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
+                    f.write("---\n\n")
+                    f.write(markdown_text)
+                print(f">> Report saved to: {path}")
+                messagebox.showinfo("Report Saved", f"Report saved to:\n{path}")
+            except Exception as e:
+                print(f">> Error saving report: {e}")
+                messagebox.showerror("Save Error", f"Could not save report:\n{e}")
+
+        # Schedule on Tkinter's main thread — required for file dialogs
+        if hasattr(self, 'overlay') and self.overlay.root:
+            self.overlay.root.after(0, _do_save)
+
+    # ──────────────────────────────────────────────────────────────────────────
 
     def restart(self):
         print(f">> Restarting {APP_NAME}...")
@@ -202,7 +265,8 @@ class BlackBoxAgent:
             if not frame:
                 print(">> Warning: No image frame captured. Proceeding with text-only.")
             
-            # 4. Stream Reasoning + Output
+            # 4. Stream AI response to overlay only — NO auto-speech.
+            # The user can click the 'Read Summary' button to hear the result.
             print(f">> Thinking ({MODEL_NAME})...")
             stream = self.brain.analyze_stream(image_bytes=frame, prompt=clean_command)
             
@@ -211,18 +275,15 @@ class BlackBoxAgent:
             self.overlay.append(f"🔍 **Command:** {clean_command}\n")
             self.overlay.append("─" * 40 + "\n\n")
             
-            # Switch to speaking state
-            self.tray.update_state('speaking')
-            self.overlay.update_status('speaking')
-            self.speaker.speak_stream(stream, overlay=self.overlay)
+            # Switch to thinking state during stream
+            self.tray.update_state('thinking')
+            self.overlay.update_status('thinking')
             
-            # 5. Wait for speaker to finish before resetting
-            while self.speaker.is_speaking():
-                time.sleep(0.5)
+            # Display only — no auto TTS. User controls speech via the 'Read Summary' button.
+            self.speaker.stream_to_overlay(stream, overlay=self.overlay)
             
-            # 6. Reset
-            time.sleep(0.5) # Final grace period
-            self.context_frame = None # Clear context
+            # 5. Reset state after streaming completes
+            self.context_frame = None
             self.tray.update_state('idle')
             self.overlay.update_status('idle')
             self.audio_worker.resume_listening()

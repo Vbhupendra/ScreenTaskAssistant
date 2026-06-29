@@ -23,6 +23,9 @@ class OverlayWindow:
         self.queue = queue.Queue()
         self.root = None
         self.text_area = None
+        # External callbacks — set via set_callbacks() after init
+        self._on_read_callback = None
+        self._on_save_report_callback = None
         self._initialize_gui()
 
     def _initialize_gui(self):
@@ -114,9 +117,6 @@ class OverlayWindow:
             bd=0, 
             highlightthickness=0
         )
-        self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        self.text_area.config(state=tk.DISABLED, spacing1=3, spacing2=4, spacing3=3)
-        
         # Customizing vertical scrollbar colors
         try:
             self.text_area.vbar.config(
@@ -140,6 +140,59 @@ class OverlayWindow:
         
         # Initialize text buffer
         self.full_text = ""
+
+        # ── Bottom action button bar ──────────────────────────────────────────
+        # Pack this first so it reserves its space at the bottom of the window
+        self.action_bar = tk.Frame(self.root, bg=BG_CRUST, height=42)
+        self.action_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        self.action_bar.pack_propagate(False)
+
+        # Thin separator above the button bar
+        self.action_bar_separator = tk.Frame(self.root, bg=BG_SURFACE, height=1)
+        self.action_bar_separator.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.read_btn = tk.Button(
+            self.action_bar,
+            text="🔊  Read Summary",
+            bg=BG_SURFACE,
+            fg=COLOR_BLUE,
+            activebackground=COLOR_BLUE,
+            activeforeground=BG_CRUST,
+            relief=tk.FLAT,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            bd=0,
+            padx=14,
+            pady=6,
+            command=self._on_read_clicked
+        )
+        self.read_btn.pack(side=tk.LEFT, padx=(10, 4), pady=6)
+
+        self.save_report_btn = tk.Button(
+            self.action_bar,
+            text="💾  Save Report",
+            bg=BG_SURFACE,
+            fg=COLOR_GREEN,
+            activebackground=COLOR_GREEN,
+            activeforeground=BG_CRUST,
+            relief=tk.FLAT,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            bd=0,
+            padx=14,
+            pady=6,
+            command=self._on_save_report_clicked
+        )
+        self.save_report_btn.pack(side=tk.LEFT, padx=4, pady=6)
+
+        # Hover effects for action buttons
+        def _make_hover(btn, normal_fg, hover_bg, hover_fg):
+            btn.bind("<Enter>", lambda e: btn.config(bg=hover_bg, fg=hover_fg))
+            btn.bind("<Leave>", lambda e: btn.config(bg=BG_SURFACE, fg=normal_fg))
+
+        _make_hover(self.read_btn, COLOR_BLUE, COLOR_BLUE, BG_CRUST)
+        _make_hover(self.save_report_btn, COLOR_GREEN, COLOR_GREEN, BG_CRUST)
+        # ─────────────────────────────────────────────────────────────────────
         
         # Process task queue
         self._process_queue()
@@ -196,6 +249,9 @@ class OverlayWindow:
             # Regular line, parse inline elements (bold, code)
             self._insert_formatted_inline(line + "\n")
             
+        # Pack the text area to expand into all remaining window space above the bottom bar
+        self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+        self.text_area.config(state=tk.DISABLED, spacing1=3, spacing2=4, spacing3=3)
         self.text_area.see(tk.END)
         self.text_area.config(state=tk.DISABLED)
 
@@ -226,6 +282,11 @@ class OverlayWindow:
                     self.on_save_callback = callback
                     
                     self.text_area.pack_forget()
+                    # Hide action bar and separator during BYOK setup
+                    if hasattr(self, 'action_bar'):
+                        self.action_bar.pack_forget()
+                    if hasattr(self, 'action_bar_separator'):
+                        self.action_bar_separator.pack_forget()
                     self._create_byok_ui()
                     self.byok_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
                     
@@ -282,6 +343,58 @@ class OverlayWindow:
 
     def update_status(self, status: str):
         self.queue.put(("status", status))
+
+    def set_callbacks(self, on_read=None, on_save_report=None):
+        """Register external callbacks for the action buttons.
+
+        Args:
+            on_read:        Called with (str) when the Read Summary button is clicked.
+                            The string is the cleaned, speakable text (no code blocks).
+            on_save_report: Called with (str) when the Save Report button is clicked.
+                            The string is the full markdown text.
+        """
+        self._on_read_callback = on_read
+        self._on_save_report_callback = on_save_report
+
+    # ──────────────────────────── Action Button Handlers ──────────────────────
+
+    def _extract_readable_text(self) -> str:
+        """Strip code blocks and markdown symbols to produce clean speakable text."""
+        import re
+        text = self.full_text
+        # Remove fenced code blocks entirely — not useful for speech
+        text = re.sub(r"```[\s\S]*?```", "", text)
+        # Remove inline code backticks
+        text = re.sub(r"`([^`]*)`", r"\1", text)
+        # Remove markdown bold/italic markers
+        text = re.sub(r"\*{1,2}(.*?)\*{1,2}", r"\1", text)
+        # Remove markdown header markers
+        text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
+        # Remove horizontal rules
+        text = re.sub(r"^[-─]+$", "", text, flags=re.MULTILINE)
+        # Collapse excess blank lines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _on_read_clicked(self):
+        """Triggered by the Read Summary button — fires the registered callback."""
+        if not self.full_text.strip():
+            return
+        readable = self._extract_readable_text()
+        if self._on_read_callback:
+            import threading
+            threading.Thread(
+                target=self._on_read_callback,
+                args=(readable,),
+                daemon=True
+            ).start()
+
+    def _on_save_report_clicked(self):
+        """Triggered by the Save Report button — fires the registered callback."""
+        if not self.full_text.strip():
+            return
+        if self._on_save_report_callback:
+            self._on_save_report_callback(self.full_text)
 
     def _update_status_ui(self, status: str):
         status = status.lower()
@@ -381,7 +494,12 @@ class OverlayWindow:
             success = self.on_save_callback(key)
             if success:
                 self.byok_frame.pack_forget()
-                self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                # Restore widgets in correct order (bottom-first, then fill)
+                if hasattr(self, 'action_bar'):
+                    self.action_bar.pack(fill=tk.X, side=tk.BOTTOM)
+                if hasattr(self, 'action_bar_separator'):
+                    self.action_bar_separator.pack(fill=tk.X, side=tk.BOTTOM)
+                self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
                 self.hide()
             else:
                 self.status_label.config(text="⚠️ Failed to save key.", fg=COLOR_RED)
