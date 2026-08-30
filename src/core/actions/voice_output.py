@@ -164,12 +164,30 @@ class VoiceOutput:
         if overlay:
             overlay.show()
 
+        full_buffer = ""
+        has_updated_to_identifying = False
+        has_updated_to_solution = False
+
         for chunk in generator:
             if not self.running:
                 break
             print(chunk, end="", flush=True)
             if overlay:
                 overlay.append(chunk)
+
+            full_buffer += chunk
+
+            # Transition to identifying_problems on first characters/token, or ANSWER: marker
+            if not has_updated_to_identifying and (("ANSWER:" in full_buffer) or (len(full_buffer.strip()) > 0)):
+                if overlay:
+                    overlay.update_status('identifying_problems')
+                has_updated_to_identifying = True
+
+            # Transition to generating_solution once ACTION: marker is encountered
+            if not has_updated_to_solution and ("ACTION:" in full_buffer):
+                if overlay:
+                    overlay.update_status('generating_solution')
+                has_updated_to_solution = True
 
         print()  # Newline after stream ends
 

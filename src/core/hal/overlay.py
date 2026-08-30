@@ -1,505 +1,983 @@
 import tkinter as tk
 from tkinter import scrolledtext
-import threading
 import queue
+import json
+import os
 
-# Catppuccin Mocha Palette
-BG_BASE = "#1e1e2e"
-BG_MANTLE = "#181825"
-BG_CRUST = "#11111b"
-BG_SURFACE = "#313244"
-FG_TEXT = "#cdd6f4"
-FG_SUBTEXT = "#a6adc8"
-COLOR_BLUE = "#89b4fa"
-COLOR_GREEN = "#a6e3a1"
-COLOR_RED = "#f38ba8"
-COLOR_YELLOW = "#f9e2af"
-COLOR_PINK = "#f5c2e7"
-COLOR_ROSEWATER = "#f5e0dc"
+# ── Colour palette ───────────────────────────────────────────────────────────
+# Slightly warmer dark tones to improve legibility on consumer displays.
+BG_BASE    = "#0d0d14"   # Window background
+BG_MANTLE  = "#13131e"   # Text-area background
+BG_CRUST   = "#090910"   # Title/footer bar background
+BG_SURFACE = "#1c1c2a"   # Separators, raised elements
+
+FG_TEXT    = "#e8e8f0"   # Primary body text — slightly off-white for comfort
+FG_SUBTEXT = "#8888a0"   # Muted/secondary text
+
+COLOR_BLUE   = "#5b9cf6"  # Primary accent
+COLOR_PURPLE = "#9b6ef7"  # Secondary accent
+COLOR_GREEN  = "#3ddc84"  # Success / completed
+COLOR_RED    = "#e8607a"  # Error / listening
+COLOR_YELLOW = "#f5c842"  # Warning / problems
+COLOR_CYAN   = "#3dd6f5"  # Speaking
+
+# ── Centralized sizing constants ─────────────────────────────────────────────
+MIN_WIDTH  = 340
+MAX_WIDTH  = 820
+MIN_HEIGHT = 130
+MAX_HEIGHT = 660
+
+COMPACT_WIDTH  = 360
+COMPACT_HEIGHT = 130
+
+STANDARD_WIDTH  = 480
+STANDARD_HEIGHT = 390
+
+EXPANDED_WIDTH  = 680
+EXPANDED_HEIGHT = 540
+
+# AUTO mode text-length thresholds (characters of clean readable text)
+SHORT_THRESHOLD  = 160   # < 160  → COMPACT
+NORMAL_THRESHOLD = 620   # 160–620 → STANDARD
+# > 620 → EXPANDED (scrolling enabled when content overflows)
+LONG_THRESHOLD   = 1500
+
+# Status label abbreviations to keep title bar tidy at all widths
+_STATUS_LABELS = {
+    "idle":                "● IDLE",
+    "listening":           "● LISTENING",
+    "thinking":            "● THINKING",
+    "speaking":            "● SPEAKING",
+    "analyzing_screen":    "● ANALYZING",
+    "understanding_context": "● UNDERSTANDING",
+    "identifying_problems":  "● IDENTIFYING",
+    "generating_solution":   "● GENERATING",
+    "completed":           "● DONE",
+    "error":               "● ERROR",
+    "cancelled":           "● CANCELLED",
+}
+
+_STATUS_COLORS = {
+    "idle":                COLOR_GREEN,
+    "listening":           COLOR_RED,
+    "thinking":            COLOR_PURPLE,
+    "speaking":            COLOR_CYAN,
+    "analyzing_screen":    COLOR_BLUE,
+    "understanding_context": COLOR_PURPLE,
+    "identifying_problems":  COLOR_YELLOW,
+    "generating_solution":   COLOR_GREEN,
+    "completed":           COLOR_GREEN,
+    "error":               COLOR_RED,
+    "cancelled":           COLOR_YELLOW,
+}
+
+# Pipeline stage → step index mapping
+# -1 = no pipeline change for this status
+_STAGE_INDEX = {
+    "analyzing_screen":      0,
+    "listening":             0,
+    "understanding_context": 1,
+    "identifying_problems":  2,
+    "thinking":              2,
+    "generating_solution":   3,
+    "speaking":              3,
+    "completed":             4,
+    # Terminal states that freeze at current step
+    "cancelled":            -1,
+    "error":                -1,
+    "idle":                 -1,
+}
+
 
 class OverlayWindow:
-    """Thread-safe borderless floating response panel using Tkinter."""
+    """Thread-safe borderless floating panel with premium styling and adaptive sizing."""
+
     def __init__(self):
         self.queue = queue.Queue()
         self.root = None
         self.text_area = None
-        # External callbacks — set via set_callbacks() after init
+
+        self.size_mode = "AUTO"
+        self._last_status = "idle"       # stored in its original case
+        self._current_active_idx = -1
+
+        self.pref_width = None
+        self.pref_height = None
+        self.is_manual_resized = False
+
+        self.pref_x = None
+        self.pref_y = None
+        self.is_manual_positioned = False
+
+        # Debounce resize-save: only persist after drag ends
+        self._resize_save_pending = False
+
         self._on_read_callback = None
         self._on_save_report_callback = None
+
+        self._load_ui_settings()
         self._initialize_gui()
+
+    # ── Settings persistence ─────────────────────────────────────────────────
+
+    def _load_ui_settings(self):
+        try:
+            from src.core.config_manager import get_config_path
+            p = get_config_path()
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.size_mode  = data.get("ui_size_mode", "AUTO").upper()
+                pw = data.get("ui_pref_width")
+                ph = data.get("ui_pref_height")
+                if pw and ph:
+                    self.pref_width  = int(pw)
+                    self.pref_height = int(ph)
+                    self.is_manual_resized = True
+                px = data.get("ui_pref_x")
+                py = data.get("ui_pref_y")
+                if px is not None and py is not None:
+                    self.pref_x = int(px)
+                    self.pref_y = int(py)
+                    self.is_manual_positioned = True
+        except Exception as e:
+            print(f"UI settings load error: {e}")
+
+    def _save_ui_settings(self):
+        try:
+            from src.core.config_manager import get_config_path
+            p = get_config_path()
+            data = {}
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data["ui_size_mode"] = self.size_mode
+            if self.is_manual_resized and self.pref_width and self.pref_height:
+                data["ui_pref_width"]  = self.pref_width
+                data["ui_pref_height"] = self.pref_height
+            else:
+                data.pop("ui_pref_width",  None)
+                data.pop("ui_pref_height", None)
+            if self.is_manual_positioned and self.pref_x is not None and self.pref_y is not None:
+                data["ui_pref_x"] = self.pref_x
+                data["ui_pref_y"] = self.pref_y
+            else:
+                data.pop("ui_pref_x", None)
+                data.pop("ui_pref_y", None)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            print(f"UI settings save error: {e}")
+
+    # ── GUI bootstrap ────────────────────────────────────────────────────────
 
     def _initialize_gui(self):
         self.root = tk.Tk()
-        self.root.title("BlackBox AI Response Panel")
-        
-        # Borderless window and stay on top
+        self.root.title("BlackBox Pro")
         self.root.overrideredirect(True)
         self.root.wm_attributes("-topmost", True)
-        
         self.root.configure(bg=BG_BASE)
-        
-        # 1px vibrant blue border
-        self.root.config(highlightbackground=COLOR_BLUE, highlightcolor=COLOR_BLUE, highlightthickness=1)
-        
-        # Geometry: 480x360 at bottom-right of screen (slightly larger for premium look)
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        w, h = 480, 360
-        x = screen_w - w - 25
-        y = screen_h - h - 65
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
-        
-        # Custom title bar for dragging
-        self.title_bar = tk.Frame(self.root, bg=BG_CRUST, height=34)
+        # Single-pixel border using the root's highlight; colour matches accent
+        self.root.config(
+            highlightbackground=BG_SURFACE,
+            highlightcolor=BG_SURFACE,
+            highlightthickness=1,
+        )
+
+        self.full_text = ""
+
+        self._build_title_bar()
+        self._build_pipeline_bar()
+        self._build_text_area()
+        self._build_action_bar()
+
+        # Bind configure event for automatic label wrapping on resize
+        self.root.bind("<Configure>", self._on_configure)
+
+        self.apply_geometry()
+        self._process_queue()
+        self.root.withdraw()
+
+    # ── Title bar ────────────────────────────────────────────────────────────
+
+    def _build_title_bar(self):
+        self.title_bar = tk.Frame(self.root, bg=BG_CRUST, height=32)
         self.title_bar.pack(fill=tk.X, side=tk.TOP)
         self.title_bar.pack_propagate(False)
-        
-        # Title text
+
+        # App title
         self.title_label = tk.Label(
-            self.title_bar, 
-            text="✨ BlackBox Pro", 
-            bg=BG_CRUST, 
-            fg=FG_TEXT, 
-            font=("Segoe UI", 9, "bold")
+            self.title_bar, text="BlackBox Pro",
+            bg=BG_CRUST, fg=FG_TEXT, font=("Segoe UI", 9, "bold"),
         )
-        self.title_label.pack(side=tk.LEFT, padx=12)
-        
-        # Close button with hover animation
+        self.title_label.pack(side=tk.LEFT, padx=(12, 0))
+
+        # Close button — right-most
         self.close_button = tk.Button(
-            self.title_bar, 
-            text=" ✕ ", 
-            bg=BG_CRUST, 
-            fg=COLOR_RED, 
-            activebackground=COLOR_RED, 
-            activeforeground=BG_CRUST, 
-            bd=0, 
-            font=("Segoe UI", 10, "bold"), 
+            self.title_bar, text="✕",
+            bg=BG_CRUST, fg=FG_SUBTEXT,
+            activebackground=COLOR_RED, activeforeground=BG_CRUST,
+            bd=0, font=("Segoe UI", 9), cursor="hand2",
+            padx=8, pady=0,
             command=self.hide,
-            cursor="hand2"
         )
-        self.close_button.pack(side=tk.RIGHT, padx=8)
-        
-        def on_close_enter(e):
-            self.close_button.config(bg=COLOR_RED, fg=BG_CRUST)
-        def on_close_leave(e):
-            self.close_button.config(bg=BG_CRUST, fg=COLOR_RED)
-        self.close_button.bind("<Enter>", on_close_enter)
-        self.close_button.bind("<Leave>", on_close_leave)
-        
-        # Status indicator label
+        self.close_button.pack(side=tk.RIGHT)
+        self.close_button.bind("<Enter>", lambda e: self.close_button.config(fg=COLOR_RED))
+        self.close_button.bind("<Leave>", lambda e: self.close_button.config(fg=FG_SUBTEXT))
+
+        # Status dot — right of close
         self.status_indicator = tk.Label(
-            self.title_bar,
-            text="● IDLE",
-            bg=BG_CRUST,
-            fg=COLOR_GREEN,
-            font=("Segoe UI", 9, "bold")
+            self.title_bar, text="● IDLE",
+            bg=BG_CRUST, fg=COLOR_GREEN,
+            font=("Segoe UI", 8, "bold"),
         )
-        self.status_indicator.pack(side=tk.RIGHT, padx=(0, 10))
-        
-        # Thin boundary separator between title bar and content area
-        self.separator = tk.Frame(self.root, bg=BG_SURFACE, height=1)
-        self.separator.pack(fill=tk.X, side=tk.TOP)
-        
-        # Drag bindings
-        self.title_bar.bind("<Button-1>", self._start_drag)
-        self.title_bar.bind("<B1-Motion>", self._on_drag)
-        self.title_label.bind("<Button-1>", self._start_drag)
-        self.title_label.bind("<B1-Motion>", self._on_drag)
-        
-        # scrolledText responder pane
+        self.status_indicator.pack(side=tk.RIGHT, padx=(0, 8))
+
+        # Size-mode micro-buttons
+        self.size_frame = tk.Frame(self.title_bar, bg=BG_CRUST)
+        self.size_frame.pack(side=tk.RIGHT, padx=(0, 10))
+
+        self.size_buttons = {}
+        for mode in ("COMPACT", "AUTO", "STANDARD", "EXPANDED"):
+            btn = tk.Button(
+                self.size_frame, text=mode[0],
+                bg=BG_CRUST, fg=FG_SUBTEXT,
+                activebackground=BG_SURFACE, activeforeground=FG_TEXT,
+                bd=0, font=("Segoe UI", 7, "bold"),
+                cursor="hand2", padx=3, pady=1,
+                command=lambda m=mode: self.set_size_mode(m),
+            )
+            btn.pack(side=tk.LEFT, padx=1)
+            self.size_buttons[mode] = btn
+        self._update_size_buttons()
+
+        # Drag support
+        for w in (self.title_bar, self.title_label):
+            w.bind("<Button-1>", self._start_drag)
+            w.bind("<B1-Motion>", self._on_drag)
+            w.bind("<ButtonRelease-1>", self._end_drag)
+
+        # Title-bar separator
+        tk.Frame(self.root, bg=BG_SURFACE, height=1).pack(fill=tk.X, side=tk.TOP)
+
+    # ── Pipeline progress bar ─────────────────────────────────────────────────
+
+    def _build_pipeline_bar(self):
+        self.pipeline_frame = tk.Frame(self.root, bg=BG_CRUST, height=24)
+        self.pipeline_frame.pack(fill=tk.X, side=tk.TOP)
+        self.pipeline_frame.pack_propagate(False)
+
+        # Centre the steps using a nested frame + pack fill/expand trick
+        inner = tk.Frame(self.pipeline_frame, bg=BG_CRUST)
+        inner.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        self.steps = ["Screen", "Context", "Problems", "Solution", "Complete"]
+        self.step_labels = []
+        self.step_connectors = []   # ‹ store arrow labels for dynamic recoloring
+
+        for idx, name in enumerate(self.steps):
+            lbl = tk.Label(
+                inner, text=name,
+                bg=BG_CRUST, fg=FG_SUBTEXT,
+                font=("Segoe UI", 7, "bold"),
+            )
+            lbl.grid(row=0, column=idx * 2)
+            self.step_labels.append(lbl)
+            if idx < len(self.steps) - 1:
+                arrow = tk.Label(
+                    inner, text="›",
+                    bg=BG_CRUST, fg=BG_SURFACE,
+                    font=("Segoe UI", 9),
+                )
+                arrow.grid(row=0, column=idx * 2 + 1, padx=4)
+                self.step_connectors.append(arrow)
+
+        # Separator below pipeline
+        self.pipeline_separator = tk.Frame(self.root, bg=BG_SURFACE, height=1)
+        self.pipeline_separator.pack(fill=tk.X, side=tk.TOP)
+
+    # ── Text area ─────────────────────────────────────────────────────────────
+
+    def _build_text_area(self):
         self.text_area = scrolledtext.ScrolledText(
-            self.root, 
-            wrap=tk.WORD, 
-            bg=BG_MANTLE, 
-            fg=FG_TEXT, 
+            self.root,
+            wrap=tk.WORD,
+            bg=BG_MANTLE, fg=FG_TEXT,
             insertbackground=FG_TEXT,
-            font=("Segoe UI", 10), 
-            bd=0, 
-            highlightthickness=0
+            font=("Segoe UI", 10),
+            bd=0, highlightthickness=0,
+            padx=12, pady=10,        # internal padding; avoids separate padx in pack
+            spacing1=2, spacing2=3, spacing3=2,
         )
-        # Customizing vertical scrollbar colors
         try:
             self.text_area.vbar.config(
-                bg=BG_MANTLE, 
-                activebackground=BG_SURFACE, 
-                troughcolor=BG_CRUST, 
-                borderwidth=0, 
-                width=10, 
-                relief=tk.FLAT
+                bg=BG_MANTLE, activebackground=BG_SURFACE,
+                troughcolor=BG_CRUST,
+                borderwidth=0, width=6, relief=tk.FLAT,
             )
         except Exception:
             pass
-            
-        # Configure tags for markdown rendering
-        self.text_area.tag_config("normal", font=("Segoe UI", 10), foreground=FG_TEXT)
-        self.text_area.tag_config("bold", font=("Segoe UI", 10, "bold"), foreground=COLOR_PINK)
-        self.text_area.tag_config("header", font=("Segoe UI", 11, "bold"), foreground=COLOR_BLUE)
-        self.text_area.tag_config("code_block", font=("Consolas", 9), foreground=COLOR_GREEN, background=BG_CRUST)
-        self.text_area.tag_config("inline_code", font=("Consolas", 9, "bold"), foreground=COLOR_ROSEWATER, background=BG_SURFACE)
-        self.text_area.tag_config("bullet_symbol", font=("Segoe UI", 10, "bold"), foreground=COLOR_YELLOW)
-        
-        # Initialize text buffer
-        self.full_text = ""
 
-        # ── Bottom action button bar ──────────────────────────────────────────
-        # Pack this first so it reserves its space at the bottom of the window
-        self.action_bar = tk.Frame(self.root, bg=BG_CRUST, height=42)
-        self.action_bar.pack(fill=tk.X, side=tk.BOTTOM)
-        self.action_bar.pack_propagate(False)
+        # Text tags
+        self.text_area.tag_config("normal",
+            font=("Segoe UI", 10), foreground=FG_TEXT)
+        self.text_area.tag_config("bold",
+            font=("Segoe UI", 10, "bold"), foreground=COLOR_PURPLE)
+        self.text_area.tag_config("header",
+            font=("Segoe UI", 11, "bold"), foreground=COLOR_BLUE,
+            spacing1=6, spacing3=2)
+        self.text_area.tag_config("code_block",
+            font=("Consolas", 9), foreground=COLOR_GREEN,
+            background=BG_CRUST, lmargin1=12, lmargin2=12, rmargin=12,
+            spacing1=2, spacing3=2)
+        self.text_area.tag_config("inline_code",
+            font=("Consolas", 9), foreground=COLOR_CYAN,
+            background=BG_SURFACE)
+        self.text_area.tag_config("bullet_symbol",
+            font=("Segoe UI", 10), foreground=COLOR_YELLOW)
 
-        # Thin separator above the button bar
+        # ANSWER / REASON / ACTION section headers
+        self.text_area.tag_config("header_answer",
+            font=("Segoe UI", 10, "bold"), foreground=COLOR_BLUE,
+            spacing1=10, spacing3=2)
+        self.text_area.tag_config("header_reason",
+            font=("Segoe UI", 10, "bold"), foreground=COLOR_YELLOW,
+            spacing1=10, spacing3=2)
+        self.text_area.tag_config("header_action",
+            font=("Segoe UI", 10, "bold"), foreground=COLOR_PURPLE,
+            spacing1=10, spacing3=2)
+
+    # ── Action / footer bar ───────────────────────────────────────────────────
+
+    def _build_action_bar(self):
         self.action_bar_separator = tk.Frame(self.root, bg=BG_SURFACE, height=1)
         self.action_bar_separator.pack(fill=tk.X, side=tk.BOTTOM)
 
-        self.read_btn = tk.Button(
-            self.action_bar,
-            text="🔊  Read Summary",
-            bg=BG_SURFACE,
-            fg=COLOR_BLUE,
-            activebackground=COLOR_BLUE,
-            activeforeground=BG_CRUST,
-            relief=tk.FLAT,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-            bd=0,
-            padx=14,
-            pady=6,
-            command=self._on_read_clicked
+        self.action_bar = tk.Frame(self.root, bg=BG_CRUST, height=38)
+        self.action_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        self.action_bar.pack_propagate(False)
+
+        btn_defaults = dict(
+            bg=BG_SURFACE, relief=tk.FLAT, bd=0, cursor="hand2",
+            font=("Segoe UI", 8, "bold"), padx=12, pady=5,
         )
-        self.read_btn.pack(side=tk.LEFT, padx=(10, 4), pady=6)
+
+        self.read_btn = tk.Button(
+            self.action_bar, text="🔊 Read Summary",
+            fg=COLOR_BLUE, activebackground=COLOR_BLUE, activeforeground=BG_CRUST,
+            command=self._on_read_clicked, **btn_defaults,
+        )
+        self.read_btn.pack(side=tk.LEFT, padx=(8, 3), pady=5)
 
         self.save_report_btn = tk.Button(
-            self.action_bar,
-            text="💾  Save Report",
-            bg=BG_SURFACE,
-            fg=COLOR_GREEN,
-            activebackground=COLOR_GREEN,
-            activeforeground=BG_CRUST,
-            relief=tk.FLAT,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-            bd=0,
-            padx=14,
-            pady=6,
-            command=self._on_save_report_clicked
+            self.action_bar, text="💾 Save Report",
+            fg=COLOR_GREEN, activebackground=COLOR_GREEN, activeforeground=BG_CRUST,
+            command=self._on_save_report_clicked, **btn_defaults,
         )
-        self.save_report_btn.pack(side=tk.LEFT, padx=4, pady=6)
+        self.save_report_btn.pack(side=tk.LEFT, padx=3, pady=5)
 
-        # Hover effects for action buttons
-        def _make_hover(btn, normal_fg, hover_bg, hover_fg):
-            btn.bind("<Enter>", lambda e: btn.config(bg=hover_bg, fg=hover_fg))
-            btn.bind("<Leave>", lambda e: btn.config(bg=BG_SURFACE, fg=normal_fg))
+        def _make_hover(btn, fg_normal, fg_hover_bg):
+            btn.bind("<Enter>", lambda e: btn.config(bg=fg_hover_bg, fg=BG_CRUST))
+            btn.bind("<Leave>", lambda e: btn.config(bg=BG_SURFACE, fg=fg_normal))
 
-        _make_hover(self.read_btn, COLOR_BLUE, COLOR_BLUE, BG_CRUST)
-        _make_hover(self.save_report_btn, COLOR_GREEN, COLOR_GREEN, BG_CRUST)
-        # ─────────────────────────────────────────────────────────────────────
-        
-        # Process task queue
-        self._process_queue()
-        
-        # Hide initially
-        self.root.withdraw()
+        _make_hover(self.read_btn,       COLOR_BLUE,  COLOR_BLUE)
+        _make_hover(self.save_report_btn, COLOR_GREEN, COLOR_GREEN)
 
-    def run(self):
-        """Starts the Tkinter main loop on the main thread."""
-        if self.root:
-            self.root.mainloop()
+        # Resize grip — bottom-right corner
+        self.resize_grip = tk.Label(
+            self.action_bar, text="◢",
+            bg=BG_CRUST, fg=BG_SURFACE,
+            cursor="size_nw_se", font=("Segoe UI", 7),
+        )
+        self.resize_grip.pack(side=tk.RIGHT, anchor=tk.SE, padx=3, pady=3)
+        self.resize_grip.bind("<Button-1>",   self._start_resize)
+        self.resize_grip.bind("<B1-Motion>",  self._on_resize)
+        self.resize_grip.bind("<ButtonRelease-1>", self._end_resize)
+        self.resize_grip.bind("<Enter>", lambda e: self.resize_grip.config(fg=FG_SUBTEXT))
+        self.resize_grip.bind("<Leave>", lambda e: self.resize_grip.config(fg=BG_SURFACE))
+
+    # ── Drag ──────────────────────────────────────────────────────────────────
 
     def _start_drag(self, event):
-        self.drag_x = event.x
-        self.drag_y = event.y
+        self._drag_x = event.x
+        self._drag_y = event.y
 
     def _on_drag(self, event):
-        x = self.root.winfo_x() + (event.x - self.drag_x)
-        y = self.root.winfo_y() + (event.y - self.drag_y)
+        dx = event.x - self._drag_x
+        dy = event.y - self._drag_y
+        x = self.root.winfo_x() + dx
+        y = self.root.winfo_y() + dy
         self.root.geometry(f"+{x}+{y}")
+        self.pref_x = x
+        self.pref_y = y
+        self.is_manual_positioned = True
+
+    def _end_drag(self, event):
+        if self.is_manual_positioned:
+            self._save_ui_settings()
+
+    # ── Resize grip ───────────────────────────────────────────────────────────
+
+    def _start_resize(self, event):
+        self._rx0 = event.x_root
+        self._ry0 = event.y_root
+        self._rw0 = self.root.winfo_width()
+        self._rh0 = self.root.winfo_height()
+        # Keep track of initial coordinates to anchor resizing relative to bottom-right
+        self._rx_win = self.root.winfo_x()
+        self._ry_win = self.root.winfo_y()
+
+    def _on_resize(self, event):
+        dx = event.x_root - self._rx0
+        dy = event.y_root - self._ry0
+        nw = max(MIN_WIDTH,  min(MAX_WIDTH,  self._rw0 + dx))
+        nh = max(MIN_HEIGHT, min(MAX_HEIGHT, self._rh0 + dy))
+        
+        self.is_manual_resized = True
+        self.pref_width  = nw
+        self.pref_height = nh
+        
+        if not self.is_manual_positioned:
+            # Anchored to bottom-right: offset x and y dynamically by size change
+            dw = nw - self._rw0
+            dh = nh - self._rh0
+            nx = self._rx_win - dw
+            ny = self._ry_win - dh
+            self.root.geometry(f"{nw}x{nh}+{nx}+{ny}")
+        else:
+            # Free floating: keep top-left corner fixed
+            self.root.geometry(f"{nw}x{nh}")
+
+    def _end_resize(self, event):
+        if self.is_manual_resized:
+            self._save_ui_settings()
+
+    # ── Size configure callback ───────────────────────────────────────────────
+
+    def _on_configure(self, event):
+        # Respond ONLY to root window resize events to avoid reacting to child widget moves
+        if event.widget == self.root:
+            if hasattr(self, "_compact_lbl") and self._compact_lbl.winfo_manager():
+                w = self.root.winfo_width()
+                self._compact_lbl.config(wraplength=max(100, w - 28))
+
+    # ── Size modes ────────────────────────────────────────────────────────────
+
+    def set_size_mode(self, mode: str):
+        self.size_mode = mode.upper()
+        self.is_manual_resized = False
+        self.pref_width  = None
+        self.pref_height = None
+        self.is_manual_positioned = False
+        self.pref_x = None
+        self.pref_y = None
+        self._update_size_buttons()
+        self.apply_geometry()
+        self._save_ui_settings()
+
+    def _update_size_buttons(self):
+        for mode, btn in self.size_buttons.items():
+            active = (mode == self.size_mode)
+            btn.config(
+                fg=COLOR_BLUE if active else FG_SUBTEXT,
+                bg=BG_SURFACE if active else BG_CRUST,
+            )
+
+    def _get_auto_mode_for_content(self) -> str:
+        # During active streaming phases always stay STANDARD (stable)
+        if self._last_status.lower() in (
+            "listening", "analyzing_screen", "understanding_context",
+        ):
+            return "STANDARD"
+        if not self.full_text:
+            return "STANDARD"
+        clean_len = len(self._extract_readable_text())
+        if clean_len < SHORT_THRESHOLD:
+            return "COMPACT"
+        if clean_len < NORMAL_THRESHOLD:
+            return "STANDARD"
+        return "EXPANDED"
+
+    def apply_geometry(self):
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+
+        effective = self.size_mode
+        if effective == "AUTO":
+            effective = self._get_auto_mode_for_content()
+
+        # Pack/unpack heavy widgets based on mode — done ONCE here
+        if effective == "COMPACT":
+            self._set_compact_layout()
+            w = self.pref_width  if self.is_manual_resized else COMPACT_WIDTH
+            h = COMPACT_HEIGHT   # Lock compact height to lock visual design
+        else:
+            self._set_full_layout()
+            if effective == "STANDARD":
+                w = self.pref_width  if self.is_manual_resized else STANDARD_WIDTH
+                h = self.pref_height if self.is_manual_resized else STANDARD_HEIGHT
+            else:  # EXPANDED
+                w = self.pref_width  if self.is_manual_resized else EXPANDED_WIDTH
+                h = self.pref_height if self.is_manual_resized else EXPANDED_HEIGHT
+
+        w = max(MIN_WIDTH,  min(MAX_WIDTH,  w))
+        h = max(MIN_HEIGHT, min(MAX_HEIGHT, h))
+
+        if self.is_manual_positioned and self.pref_x is not None and self.pref_y is not None:
+            # Preserve user's manually dragged position
+            x = self.pref_x
+            y = self.pref_y
+        else:
+            # Anchor to bottom-right of the screen
+            x = sw - w - 25
+            y = sh - h - 65
+
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _is_widget_packed(self, widget) -> bool:
+        """Check if widget is packed in parent cavity using pack_info.
+        (Avoids ScrolledText winfo_manager quirk where internal scrollbar frame returns 'pack').
+        """
+        try:
+            widget.pack_info()
+            return True
+        except Exception:
+            return False
+
+    def _set_compact_layout(self):
+        """Switch to compact layout: hide pipeline + text area, show preview label."""
+        if self._is_widget_packed(self.pipeline_frame):
+            self.pipeline_frame.pack_forget()
+        if self._is_widget_packed(self.pipeline_separator):
+            self.pipeline_separator.pack_forget()
+        if self._is_widget_packed(self.text_area):
+            self.text_area.pack_forget()
+
+        cw = self.pref_width if self.is_manual_resized else COMPACT_WIDTH
+
+        if not hasattr(self, "_compact_lbl"):
+            self._compact_lbl = tk.Label(
+                self.root,
+                bg=BG_MANTLE, fg=FG_SUBTEXT,
+                font=("Segoe UI", 9), anchor=tk.W,
+                justify=tk.LEFT, padx=12, pady=8,
+                wraplength=max(100, cw - 28),
+            )
+        else:
+            self._compact_lbl.config(wraplength=max(100, cw - 28))
+
+        if not self._is_widget_packed(self._compact_lbl):
+            # Insert between title bar and action bar
+            self._compact_lbl.pack(fill=tk.BOTH, expand=True)
+
+        self._update_compact_label()
+
+    def _update_compact_label(self):
+        txt = self._extract_readable_text()
+        if not txt:
+            txt = "Listening…"
+        
+        # Filter lines to get the first actual response content
+        first_line = "Listening…"
+        for line in txt.splitlines():
+            line_str = line.strip()
+            if not line_str:
+                continue
+            # Skip Command / query headers and separators
+            if "Command:" in line_str or line_str.startswith("🔍") or line_str.startswith("─"):
+                continue
+            # Strip ANSWER/REASON/ACTION tags for clean preview if they exist in the line
+            clean_line = line_str
+            for tag in ("ANSWER:", "REASON:", "ACTION:"):
+                if clean_line.upper().startswith(tag):
+                    clean_line = clean_line[len(tag):].strip()
+                    break
+            if clean_line:
+                first_line = clean_line
+                break
+                
+        if len(first_line) > 70:
+            first_line = first_line[:70] + "…"
+        if hasattr(self, "_compact_lbl"):
+            self._compact_lbl.config(text=first_line)
+
+    def _set_full_layout(self):
+        """Restore full layout: pipeline + text area visible, preview hidden."""
+        if hasattr(self, "_compact_lbl") and self._is_widget_packed(self._compact_lbl):
+            self._compact_lbl.pack_forget()
+
+        if not self._is_widget_packed(self.pipeline_frame):
+            # Re-pack in correct top-down order
+            self.pipeline_frame.pack(fill=tk.X, side=tk.TOP)
+            self.pipeline_separator.pack(fill=tk.X, side=tk.TOP)
+
+        if not self._is_widget_packed(self.text_area):
+            self.text_area.pack(fill=tk.BOTH, expand=True)
+
+    # ── Text rendering ────────────────────────────────────────────────────────
 
     def _render_text(self):
-        """Parses self.full_text and renders it with rich styling (tags)."""
-        self.text_area.config(state=tk.NORMAL)
-        self.text_area.delete("1.0", tk.END)
-        
-        lines = self.full_text.split("\n")
+        """Re-render full_text into the styled text widget."""
+        ta = self.text_area
+
+        # Capture scroll position before clearing
+        yview_before = ta.yview()
+        at_bottom = yview_before[1] >= 0.98
+
+        ta.config(state=tk.NORMAL)
+        ta.delete("1.0", tk.END)
+
         in_code_block = False
-        
-        for i, line in enumerate(lines):
-            # Check for code block boundary
+        for line in self.full_text.split("\n"):
+            # Code fence toggle
             if line.strip().startswith("```"):
                 in_code_block = not in_code_block
                 continue
-                
-            if in_code_block:
-                self.text_area.insert(tk.END, line + "\n", "code_block")
-                continue
-                
-            # Parse line-level headers
-            if line.strip().startswith("#"):
-                header_text = line.lstrip("#").strip()
-                self.text_area.insert(tk.END, header_text + "\n", "header")
-                continue
-                
-            # Parse line-level bullet points
-            if line.strip().startswith("- ") or line.strip().startswith("* "):
-                bullet_symbol = "  •  "
-                content = line.strip()[2:]
-                self.text_area.insert(tk.END, bullet_symbol, "bullet_symbol")
-                self._insert_formatted_inline(content + "\n")
-                continue
-                
-            # Regular line, parse inline elements (bold, code)
-            self._insert_formatted_inline(line + "\n")
-            
-        # Pack the text area to expand into all remaining window space above the bottom bar
-        self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
-        self.text_area.config(state=tk.DISABLED, spacing1=3, spacing2=4, spacing3=3)
-        self.text_area.see(tk.END)
-        self.text_area.config(state=tk.DISABLED)
 
-    def _insert_formatted_inline(self, text: str):
-        """Helper to parse bold (**) and inline code (`) and insert them with proper tags."""
+            if in_code_block:
+                ta.insert(tk.END, line + "\n", "code_block")
+                continue
+
+            stripped = line.strip()
+            upper = stripped.upper()
+
+            # Section headers — ANSWER / REASON / ACTION
+            if upper.startswith("ANSWER:"):
+                body = line[line.upper().index("ANSWER:") + 7:].strip()
+                ta.insert(tk.END, "ANSWER\n", "header_answer")
+                if body:
+                    self._insert_inline(body + "\n")
+                continue
+            if upper.startswith("REASON:"):
+                body = line[line.upper().index("REASON:") + 7:].strip()
+                ta.insert(tk.END, "REASON\n", "header_reason")
+                if body:
+                    self._insert_inline(body + "\n")
+                continue
+            if upper.startswith("ACTION:"):
+                body = line[line.upper().index("ACTION:") + 7:].strip()
+                ta.insert(tk.END, "ACTION\n", "header_action")
+                if body:
+                    self._insert_inline(body + "\n")
+                continue
+
+            # Markdown headers
+            if stripped.startswith("#"):
+                ta.insert(tk.END, stripped.lstrip("#").strip() + "\n", "header")
+                continue
+
+            # Bullet points
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                ta.insert(tk.END, "  •  ", "bullet_symbol")
+                self._insert_inline(stripped[2:] + "\n")
+                continue
+
+            # Regular line
+            self._insert_inline(line + "\n")
+
+        ta.config(state=tk.DISABLED)
+
+        if at_bottom:
+            ta.see(tk.END)
+
+        # Compact mode: update preview label
+        if self.size_mode == "COMPACT" or (
+            self.size_mode == "AUTO" and
+            self._get_auto_mode_for_content() == "COMPACT"
+        ):
+            self._update_compact_label()
+
+    def _insert_inline(self, text: str):
+        """Parse **bold** and `inline_code` within a text segment."""
         import re
-        # Regex to match bold (**...**) or inline code (`...`)
-        pattern = re.compile(r"(\*\*.*?\*\*|`.*?`)")
-        parts = pattern.split(text)
-        
+        parts = re.split(r"(\*\*.*?\*\*|`[^`]+`)", text)
         for part in parts:
-            if part.startswith("**") and part.endswith("**"):
-                content = part[2:-2]
-                self.text_area.insert(tk.END, content, "bold")
-            elif part.startswith("`") and part.endswith("`"):
-                content = part[1:-1]
-                self.text_area.insert(tk.END, content, "inline_code")
+            if part.startswith("**") and part.endswith("**") and len(part) > 4:
+                self.text_area.insert(tk.END, part[2:-2], "bold")
+            elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+                self.text_area.insert(tk.END, part[1:-1], "inline_code")
             else:
                 self.text_area.insert(tk.END, part, "normal")
+
+    # ── Queue processor ───────────────────────────────────────────────────────
 
     def _process_queue(self):
         try:
             while True:
                 task = self.queue.get_nowait()
-                action = task[0]
-                if action == "show_key_input":
-                    callback = task[1]
-                    self.on_save_callback = callback
-                    
-                    self.text_area.pack_forget()
-                    # Hide action bar and separator during BYOK setup
-                    if hasattr(self, 'action_bar'):
-                        self.action_bar.pack_forget()
-                    if hasattr(self, 'action_bar_separator'):
-                        self.action_bar_separator.pack_forget()
-                    self._create_byok_ui()
-                    self.byok_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
-                    
-                    self.key_entry.delete(0, tk.END)
-                    self.key_entry.focus_set()
-                    
-                    self.root.deiconify()
-                    self.root.lift()
-                    self.root.attributes("-topmost", True)
-                elif action == "show":
-                    self.root.deiconify()
-                    self.root.lift()
-                    self.root.attributes("-topmost", True)
-                elif action == "hide":
-                    if hasattr(self, 'byok_frame') and self.byok_frame and self.byok_frame.winfo_manager():
-                        import os
-                        print(">> Key entry cancelled. Exiting application.")
-                        os._exit(0)
-                    self.root.withdraw()
-                elif action == "clear":
-                    self.full_text = ""
-                    self.text_area.config(state=tk.NORMAL)
-                    self.text_area.delete("1.0", tk.END)
-                    self.text_area.config(state=tk.DISABLED)
-                elif action == "append":
-                    text = task[1]
-                    self.full_text += text
-                    self._render_text()
-                elif action == "status":
-                    status_text = task[1]
-                    self._update_status_ui(status_text)
-                    
+                self._handle_task(task)
                 self.queue.task_done()
         except queue.Empty:
             pass
-        
         if self.root:
             self.root.after(40, self._process_queue)
 
-    def show(self):
-        self.queue.put(("show",))
+    def _handle_task(self, task):
+        action = task[0]
+        if action == "show":
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+        elif action == "hide":
+            if hasattr(self, "byok_frame") and self.byok_frame.winfo_manager():
+                import os as _os; _os._exit(0)
+            self.root.withdraw()
+        elif action == "clear":
+            self.full_text = ""
+            self.text_area.config(state=tk.NORMAL)
+            self.text_area.delete("1.0", tk.END)
+            self.text_area.config(state=tk.DISABLED)
+        elif action == "append":
+            self.full_text += task[1]
+            self._render_text()
+        elif action == "status":
+            self._update_status_ui(task[1])
+        elif action == "show_key_input":
+            self._show_byok(task[1])
 
-    def hide(self):
-        self.queue.put(("hide",))
+    # ── Status / pipeline ─────────────────────────────────────────────────────
 
-    def clear(self):
-        self.queue.put(("clear",))
+    def _update_status_ui(self, status: str):
+        self._last_status = status
+        key = status.lower()
+        label = _STATUS_LABELS.get(key, "● IDLE")
+        color = _STATUS_COLORS.get(key, COLOR_GREEN)
+        self.status_indicator.config(text=label, fg=color)
+        self._update_pipeline(key)
 
-    def append(self, text: str):
-        self.queue.put(("append", text))
+        # Trigger geometry reflow only at terminal/idle states and query start states
+        # (completed/error/cancelled/idle/listening/analyzing_screen/understanding_context)
+        # or when a non-AUTO mode is active (user chose explicit mode)
+        if key in (
+            "completed", "error", "cancelled", "idle", 
+            "listening", "analyzing_screen", "understanding_context"
+        ) or self.size_mode != "AUTO":
+            self.apply_geometry()
 
-    def show_key_input(self, on_save_callback):
-        self.queue.put(("show_key_input", on_save_callback))
+    def _update_pipeline(self, status_key: str):
+        """Update pipeline step labels to reflect PENDING/ACTIVE/COMPLETED/ERROR/CANCELLED."""
+        is_error     = (status_key == "error")
+        is_cancelled = (status_key == "cancelled")
+        is_idle      = (status_key == "idle")
 
-    def update_status(self, status: str):
-        self.queue.put(("status", status))
+        # Advance the tracked active index only for forward-moving states
+        new_idx = _STAGE_INDEX.get(status_key, -1)
+        if new_idx >= 0:
+            self._current_active_idx = new_idx
+
+        active_idx = self._current_active_idx
+
+        # ── Reset all to idle when returning to IDLE ─────────────────────────
+        if is_idle:
+            self._current_active_idx = -1
+            for lbl in self.step_labels:
+                lbl.config(fg=FG_SUBTEXT, font=("Segoe UI", 7, "bold"))
+            for arrow in self.step_connectors:
+                arrow.config(fg=BG_SURFACE)
+            return
+
+        for idx, lbl in enumerate(self.step_labels):
+            if is_error:
+                # ERROR: freeze steps — completed stay green, failing step turns red,
+                # subsequent steps go back to subdued
+                if idx < active_idx:
+                    lbl.config(fg=COLOR_GREEN,  font=("Segoe UI", 7, "bold"))
+                elif idx == active_idx:
+                    lbl.config(fg=COLOR_RED,    font=("Segoe UI", 7, "bold"))
+                else:
+                    lbl.config(fg=FG_SUBTEXT,   font=("Segoe UI", 7, "bold"))
+
+            elif is_cancelled:
+                # CANCELLED: freeze steps — completed stay dimmed amber,
+                # active step and beyond turn muted yellow-grey
+                if idx <= active_idx:
+                    lbl.config(fg=COLOR_YELLOW, font=("Segoe UI", 7, "bold"))
+                else:
+                    lbl.config(fg=FG_SUBTEXT,   font=("Segoe UI", 7, "bold"))
+
+            elif status_key == "completed":
+                # Final COMPLETED status: all steps completed green, standard weight (not active 8pt)
+                lbl.config(fg=COLOR_GREEN, font=("Segoe UI", 7, "bold"))
+
+            elif idx < active_idx:
+                # COMPLETED prior steps: green, normal weight
+                lbl.config(fg=COLOR_GREEN,  font=("Segoe UI", 7, "bold"))
+
+            elif idx == active_idx:
+                # ACTIVE step: brighter color + heavier 8pt label (ACTIVE emphasis)
+                if idx == 2:  # Problems — yellow accent
+                    lbl.config(fg=COLOR_YELLOW, font=("Segoe UI", 8, "bold"))
+                else:
+                    lbl.config(fg=COLOR_BLUE,   font=("Segoe UI", 8, "bold"))
+
+            else:
+                # PENDING steps: subdued
+                lbl.config(fg=FG_SUBTEXT,   font=("Segoe UI", 7, "bold"))
+
+        # ── Update connector arrows ──────────────────────────────────────────
+        for c_idx, arrow in enumerate(self.step_connectors):
+            # Arrow between step c_idx and c_idx+1 lights up when step c_idx is done
+            if is_error:
+                arrow.config(fg=COLOR_GREEN if c_idx < active_idx else BG_SURFACE)
+            elif is_cancelled:
+                arrow.config(fg=COLOR_YELLOW if c_idx < active_idx else BG_SURFACE)
+            elif status_key == "completed":
+                arrow.config(fg=COLOR_GREEN)   # all arrows lit on completion
+            else:
+                arrow.config(fg=COLOR_GREEN if c_idx < active_idx else BG_SURFACE)
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def run(self):
+        if self.root:
+            self.root.mainloop()
+
+    def show(self):                     self.queue.put(("show",))
+    def hide(self):                     self.queue.put(("hide",))
+    def clear(self):                    self.queue.put(("clear",))
+    def append(self, text: str):        self.queue.put(("append", text))
+    def update_status(self, status: str): self.queue.put(("status", status))
+    def show_key_input(self, cb):       self.queue.put(("show_key_input", cb))
 
     def set_callbacks(self, on_read=None, on_save_report=None):
-        """Register external callbacks for the action buttons.
-
-        Args:
-            on_read:        Called with (str) when the Read Summary button is clicked.
-                            The string is the cleaned, speakable text (no code blocks).
-            on_save_report: Called with (str) when the Save Report button is clicked.
-                            The string is the full markdown text.
-        """
-        self._on_read_callback = on_read
+        self._on_read_callback      = on_read
         self._on_save_report_callback = on_save_report
 
-    # ──────────────────────────── Action Button Handlers ──────────────────────
+    # ── Text extraction ───────────────────────────────────────────────────────
 
     def _extract_readable_text(self) -> str:
-        """Strip code blocks and markdown symbols to produce clean speakable text."""
         import re
-        text = self.full_text
-        # Remove fenced code blocks entirely — not useful for speech
-        text = re.sub(r"```[\s\S]*?```", "", text)
-        # Remove inline code backticks
-        text = re.sub(r"`([^`]*)`", r"\1", text)
-        # Remove markdown bold/italic markers
-        text = re.sub(r"\*{1,2}(.*?)\*{1,2}", r"\1", text)
-        # Remove markdown header markers
-        text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
-        # Remove horizontal rules
-        text = re.sub(r"^[-─]+$", "", text, flags=re.MULTILINE)
-        # Collapse excess blank lines
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
+        t = self.full_text
+        t = re.sub(r"```[\s\S]*?```", "", t)
+        t = re.sub(r"`([^`]*)`",  r"\1", t)
+        t = re.sub(r"\*{1,2}(.*?)\*{1,2}", r"\1", t)
+        t = re.sub(r"^#+\s*",   "", t, flags=re.MULTILINE)
+        t = re.sub(r"^[-─]{3,}$", "", t, flags=re.MULTILINE)
+        t = re.sub(r"\n{3,}", "\n\n", t)
+        return t.strip()
+
+    # ── Button handlers ───────────────────────────────────────────────────────
 
     def _on_read_clicked(self):
-        """Triggered by the Read Summary button — fires the registered callback."""
         if not self.full_text.strip():
             return
         readable = self._extract_readable_text()
         if self._on_read_callback:
             import threading
-            threading.Thread(
-                target=self._on_read_callback,
-                args=(readable,),
-                daemon=True
-            ).start()
+            threading.Thread(target=self._on_read_callback,
+                             args=(readable,), daemon=True).start()
 
     def _on_save_report_clicked(self):
-        """Triggered by the Save Report button — fires the registered callback."""
         if not self.full_text.strip():
             return
         if self._on_save_report_callback:
             self._on_save_report_callback(self.full_text)
 
-    def _update_status_ui(self, status: str):
-        status = status.lower()
-        if status == "listening":
-            self.status_indicator.config(text="● LISTENING", fg=COLOR_RED)
-        elif status == "thinking":
-            self.status_indicator.config(text="● THINKING", fg=COLOR_BLUE)
-        elif status == "speaking":
-            self.status_indicator.config(text="● SPEAKING", fg=COLOR_YELLOW)
-        else:
-            self.status_indicator.config(text="● IDLE", fg=COLOR_GREEN)
+    # ── BYOK setup ────────────────────────────────────────────────────────────
+
+    def _show_byok(self, callback):
+        self.on_save_callback = callback
+
+        # Hide all normal content
+        for w in (self.text_area, self.pipeline_frame,
+                  self.pipeline_separator):
+            if w.winfo_manager():
+                w.pack_forget()
+        if hasattr(self, "_compact_lbl") and self._compact_lbl.winfo_manager():
+            self._compact_lbl.pack_forget()
+        if self.action_bar.winfo_manager():
+            self.action_bar.pack_forget()
+        if self.action_bar_separator.winfo_manager():
+            self.action_bar_separator.pack_forget()
+
+        self._create_byok_ui()
+        self.byok_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w, h = 400, 250
+        self.root.geometry(f"{w}x{h}+{sw - w - 25}+{sh - h - 65}")
+        self.key_entry.delete(0, tk.END)
+        self.key_entry.focus_set()
+
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
 
     def _create_byok_ui(self):
-        if hasattr(self, 'byok_frame') and self.byok_frame:
+        if hasattr(self, "byok_frame") and self.byok_frame.winfo_exists():
             return
-            
+
         self.byok_frame = tk.Frame(self.root, bg=BG_BASE)
-        
-        prompt = tk.Label(
-            self.byok_frame,
-            text="✨ BlackBox Pro - Setup",
-            bg=BG_BASE,
-            fg=COLOR_BLUE,
-            font=("Segoe UI", 12, "bold")
-        )
-        prompt.pack(pady=(20, 5))
-        
-        subtitle = tk.Label(
-            self.byok_frame,
-            text="Please enter your Google AI Studio Gemini API Key:",
-            bg=BG_BASE,
-            fg=FG_TEXT,
-            font=("Segoe UI", 9)
-        )
-        subtitle.pack(pady=(0, 15))
-        
+
+        tk.Label(self.byok_frame, text="BlackBox Pro  —  Setup",
+                 bg=BG_BASE, fg=FG_TEXT,
+                 font=("Segoe UI", 11, "bold")).pack(pady=(20, 4))
+
+        tk.Label(self.byok_frame,
+                 text="Enter your Google AI Studio API key:",
+                 bg=BG_BASE, fg=FG_SUBTEXT,
+                 font=("Segoe UI", 9)).pack(pady=(0, 12))
+
         self.key_entry = tk.Entry(
             self.byok_frame,
-            bg=BG_MANTLE,
-            fg=FG_TEXT,
+            bg=BG_MANTLE, fg=FG_TEXT,
             insertbackground=FG_TEXT,
             font=("Segoe UI", 10),
             relief=tk.FLAT,
             highlightthickness=1,
             highlightbackground=BG_SURFACE,
-            highlightcolor=COLOR_BLUE
+            highlightcolor=COLOR_BLUE,
         )
-        self.key_entry.pack(fill=tk.X, padx=30, pady=5)
-        
-        self.status_label = tk.Label(
+        self.key_entry.pack(fill=tk.X, padx=28, pady=4)
+        self.key_entry.bind("<Return>", lambda e: self._on_save_clicked())
+
+        self.byok_status = tk.Label(
             self.byok_frame,
-            text="Get a free key from: https://aistudio.google.com",
-            bg=BG_BASE,
-            fg=FG_SUBTEXT,
-            font=("Segoe UI", 8, "italic")
-        )
-        self.status_label.pack(pady=8, padx=30)
-        
-        # Link bindings to make the text actual clickable URL
-        import webbrowser
-        self.status_label.bind("<Button-1>", lambda e: webbrowser.open("https://aistudio.google.com"))
-        self.status_label.bind("<Enter>", lambda e: self.status_label.config(font=("Segoe UI", 8, "italic", "underline"), cursor="hand2"))
-        self.status_label.bind("<Leave>", lambda e: self.status_label.config(font=("Segoe UI", 8, "italic"), cursor="arrow"))
-        
-        self.save_button = tk.Button(
-            self.byok_frame,
-            text="Save & Activate",
-            bg=COLOR_BLUE,
-            fg=BG_CRUST,
-            activebackground=COLOR_PINK,
-            activeforeground=BG_CRUST,
-            relief=tk.FLAT,
-            font=("Segoe UI", 10, "bold"),
-            command=self._on_save_clicked,
+            text="aistudio.google.com  ↗",
+            bg=BG_BASE, fg=FG_SUBTEXT,
+            font=("Segoe UI", 8),
             cursor="hand2",
-            bd=0,
-            padx=24,
-            pady=8
         )
-        self.save_button.pack(pady=20)
-        
-        # Hover effect for Save button
-        def on_btn_enter(e):
-            self.save_button.config(bg=COLOR_PINK)
-        def on_btn_leave(e):
-            self.save_button.config(bg=COLOR_BLUE)
-        self.save_button.bind("<Enter>", on_btn_enter)
-        self.save_button.bind("<Leave>", on_btn_leave)
+        self.byok_status.pack(pady=6)
+
+        import webbrowser
+        self.byok_status.bind("<Button-1>",
+            lambda e: webbrowser.open("https://aistudio.google.com"))
+        self.byok_status.bind("<Enter>",
+            lambda e: self.byok_status.config(fg=COLOR_BLUE))
+        self.byok_status.bind("<Leave>",
+            lambda e: self.byok_status.config(fg=FG_SUBTEXT))
+
+        self.save_button = tk.Button(
+            self.byok_frame, text="Save & Activate",
+            bg=COLOR_BLUE, fg=BG_CRUST,
+            activebackground=COLOR_PURPLE, activeforeground=BG_CRUST,
+            relief=tk.FLAT, bd=0,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2", padx=22, pady=7,
+            command=self._on_save_clicked,
+        )
+        self.save_button.pack(pady=18)
+        self.save_button.bind("<Enter>",
+            lambda e: self.save_button.config(bg=COLOR_PURPLE))
+        self.save_button.bind("<Leave>",
+            lambda e: self.save_button.config(bg=COLOR_BLUE))
 
     def _on_save_clicked(self):
         key = self.key_entry.get().strip()
         if not key:
-            self.status_label.config(text="⚠️ Key cannot be empty!", fg=COLOR_RED)
+            self.byok_status.config(text="⚠  Key cannot be empty.", fg=COLOR_RED)
             return
-            
-        if hasattr(self, 'on_save_callback') and self.on_save_callback:
+        if hasattr(self, "on_save_callback") and self.on_save_callback:
             success = self.on_save_callback(key)
             if success:
                 self.byok_frame.pack_forget()
-                # Restore widgets in correct order (bottom-first, then fill)
-                if hasattr(self, 'action_bar'):
-                    self.action_bar.pack(fill=tk.X, side=tk.BOTTOM)
-                if hasattr(self, 'action_bar_separator'):
-                    self.action_bar_separator.pack(fill=tk.X, side=tk.BOTTOM)
-                self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+                self.apply_geometry()
                 self.hide()
             else:
-                self.status_label.config(text="⚠️ Failed to save key.", fg=COLOR_RED)
+                self.byok_status.config(text="⚠  Failed to save key.", fg=COLOR_RED)
+
+    # Alias kept for test compatibility
+    @property
+    def status_label(self):
+        return getattr(self, "byok_status", None)

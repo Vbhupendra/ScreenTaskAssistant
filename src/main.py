@@ -34,6 +34,38 @@ from src.core.hal.tray import TrayManager
 from src.core.hal.overlay import OverlayWindow
 
 from src.core.hal.audio_worker import AudioWorker
+from src.core.reasoning.intent_classifier import IntentClassifier, Intent
+
+# ---------------------------------------------------------------------------
+# Module-level constants – built once, reused on every command
+# ---------------------------------------------------------------------------
+_INTENT_PROMPTS = {
+    Intent.UNDERSTAND: "Analyze and describe what is currently visible on my screen.",
+    Intent.DIAGNOSE:   "Check the screen for any errors, bugs, or anomalies, and diagnose the issue.",
+    Intent.SOLVE:      "Provide a complete, step-by-step solution or code fix to resolve the problem visible on the screen.",
+    Intent.EXPLAIN:    "Explain the code, interface, or layout shown on my screen.",
+    Intent.SUMMARIZE:  "Provide a concise summary of the content and structure on my screen."
+}
+
+# Short generic triggers whose full text should be REPLACED by the intent prompt
+_GENERIC_TRIGGERS = {
+    Intent.UNDERSTAND: {"what's this", "what is this", "what's on my screen", "what is on my screen",
+                        "what do you see", "describe this", "describe the screen",
+                        "look at this", "check this", "check that", "what am i looking at"},
+    Intent.DIAGNOSE:   {"what's wrong", "what is wrong", "find the error", "find error",
+                        "find the bug", "find the problem", "diagnose", "analyze the error",
+                        "what's the bug", "what is the bug", "look for error",
+                        "any error", "check for error", "check the error", "debug this"},
+    Intent.SOLVE:      {"fix this", "solve this", "solve that", "fix the bug", "correct this",
+                        "resolve this", "fix it", "solve it", "make it work"},
+    Intent.EXPLAIN:    {"explain this", "explain that", "explain how", "explain why",
+                        "what does this mean", "how does this work", "explain the code"},
+    Intent.SUMMARIZE:  {"summarize this", "give me a summary", "what is the summary",
+                        "summarize the screen", "summarize the text"}
+}
+
+# Single shared instance — avoids recreating on every voice command
+_classifier = IntentClassifier()
 
 class BlackBoxAgent:
     def __init__(self):
@@ -204,8 +236,12 @@ class BlackBoxAgent:
         python = sys.executable
         os.execl(python, python, *sys.argv)
 
-    def _on_wake_word(self, raw_text: str):
-        """Callback triggered by AudioWorker when 'BlackBox' is heard."""
+    def _on_wake_word(self, raw_text: str, intent: str = Intent.UNKNOWN):
+        """Callback triggered by AudioWorker when a trigger condition is met."""
+        if intent == Intent.CANCEL:
+            self._handle_cancel()
+            return
+
         # 1. Immediate Visual Feedback (Red status on Tray and Overlay)
         self.tray.update_state('listening')
         self.overlay.clear()
@@ -219,9 +255,19 @@ class BlackBoxAgent:
         self.context_frame = self.vision.capture(force=True)
         
         # 3. Process the full command
-        self._process_command(raw_text)
+        self._process_command(raw_text, intent)
 
-    def _process_command(self, raw_text: str):
+    def _handle_cancel(self):
+        """Cancels any ongoing speech and resets the application state."""
+        print(">> Cancel command received. Stopping current actions...")
+        self.speaker.stop_speaking()
+        self.overlay.clear()
+        self.overlay.update_status('cancelled')
+        self.tray.update_state('idle')
+        self.audio_worker.resume_listening()
+        self.speaker.speak("Action cancelled.")
+
+    def _process_command(self, raw_text: str, intent: str = Intent.UNKNOWN):
         """Handle the vision + reasoning pipeline."""
         try:
             # Clean up command (remove common wake-word variants)
@@ -235,28 +281,46 @@ class BlackBoxAgent:
                     text = self.ear.get_command()
                     if text:
                         clean_command = text.strip()
+                        intent = _classifier.classify(clean_command)
                         break
                     time.sleep(0.05)
                 
                 if not clean_command:
                     clean_command = "Analyze current screen."
+                    intent = Intent.UNDERSTAND
             
-            # Autocorrect common STT mistakes for core commands
-            clean_command = self._normalize_command(clean_command)
+            if intent == Intent.UNKNOWN and clean_command:
+                intent = _classifier.classify(clean_command)
+
+            if intent == Intent.CANCEL:
+                self._handle_cancel()
+                return
+
+            if intent == Intent.UNKNOWN:
+                print(f">> Unknown intent for command: {clean_command}. Skipping task pipeline.")
+                self.overlay.clear()
+                self.overlay.append(f"🔍 **Command:** {clean_command}\n\n")
+                self.overlay.append("❌ **Command not recognized.**\n")
+                self.overlay.append("Please use a screen-related command (describe, diagnose, fix, explain, summarize).\n")
+                self.overlay.update_status('idle')
+                self.tray.update_state('idle')
+                self.audio_worker.resume_listening()
+                return
+
+            # Normalize command based on detected intent
+            clean_command = self._normalize_command_with_intent(clean_command, intent)
             
-            print(f">> Triggered! Command: {clean_command}")
-            
-            # Show the command being processed and change status to THINKING
-            self.overlay.clear()
-            self.overlay.append(f"🔍 **Command:** {clean_command}\n\n")
-            self.overlay.append("⚡ **Thinking...**\n")
+            print(f">> Triggered! Intent: {intent} | Command: {clean_command}")
             
             # Pause listening to avoid feedback or duplicate triggers
             self.audio_worker.pause_listening()
             
-            # Update Tray & Overlay: Thinking (Blue Pulse)
+            # Step 1: ANALYZING SCREEN
+            self.overlay.clear()
+            self.overlay.append(f"🔍 **Command:** {clean_command}\n\n")
+            self.overlay.append("📸 **Analyzing the screen...**\n")
+            self.overlay.update_status('analyzing_screen')
             self.tray.update_state('thinking')
-            self.overlay.update_status('thinking')
             
             # Use pre-captured context frame or capture a fresh one if needed
             urgent = self._is_urgent(clean_command)
@@ -265,62 +329,65 @@ class BlackBoxAgent:
             if not frame:
                 print(">> Warning: No image frame captured. Proceeding with text-only.")
             
-            # 4. Stream AI response to overlay only — NO auto-speech.
+            # Step 2: UNDERSTANDING CONTEXT
+            self.overlay.append("🧠 **Understanding the context...**\n")
+            self.overlay.update_status('understanding_context')
+            
+            # Stream AI response to overlay only — NO auto-speech.
             # The user can click the 'Read Summary' button to hear the result.
             print(f">> Thinking ({MODEL_NAME})...")
             stream = self.brain.analyze_stream(image_bytes=frame, prompt=clean_command)
             
-            # Prepare overlay before streaming: clear the "Thinking..." text and keep Query
+            # Prepare overlay before streaming: clear the progress messages and keep Query
             self.overlay.clear()
             self.overlay.append(f"🔍 **Command:** {clean_command}\n")
             self.overlay.append("─" * 40 + "\n\n")
             
-            # Switch to thinking state during stream
-            self.tray.update_state('thinking')
-            self.overlay.update_status('thinking')
-            
             # Display only — no auto TTS. User controls speech via the 'Read Summary' button.
+            # stream_to_overlay will handle updating to IDENTIFYING_PROBLEMS and GENERATING_SOLUTION
             self.speaker.stream_to_overlay(stream, overlay=self.overlay)
             
-            # 5. Reset state after streaming completes
-            self.context_frame = None
+            # Step 5: COMPLETED state
+            self.overlay.update_status('completed')
             self.tray.update_state('idle')
-            self.overlay.update_status('idle')
+            
+            # Reset state after streaming completes
+            self.context_frame = None
             self.audio_worker.resume_listening()
             
         except Exception as e:
             print(f"Error processing command: {e}")
+            self.overlay.update_status('error')
             try:
-                # Provide friendly audio feedback for errors
                 self.speaker.speak("I encountered a system error. Please check the logs.")
-            except:
-                pass
+            except Exception as tts_err:
+                print(f">> TTS error during error handler: {tts_err}")
             
             self.context_frame = None
             self.tray.update_state('idle')
             self.audio_worker.resume_listening()
 
-    def _normalize_command(self, text: str) -> str:
-        """Autocorrects commonly misheard phrases to match our core commands."""
-        # Clean and lower the text
-        normalized = text.lower()
+    def _normalize_command_with_intent(self, text: str, intent: str) -> str:
+        """Standardizes user commands using the classified intent.
         
-        # Target 1: "what is on my screen"
-        # STT might hear: "what is on my scream", "what is on my stream", "what's on my screen"
-        if "what is on my" in normalized or "what's on my" in normalized:
-            return "what is on my screen"
-            
-        # Target 2: "look at this code and explain it"
-        # STT might hear: "look at this cold and explain it", "look at his code"
-        if ("look at" in normalized or "look this" in normalized) and ("code" in normalized or "cold" in normalized or "explain" in normalized):
-            return "look at this code and explain it"
-            
-        # Target 3: "read the first paragraph"
-        # STT might hear: "read the fast paragraph", "read first photograph"
-        if "read" in normalized and ("first" in normalized or "fast" in normalized or "paragraph" in normalized or "photograph" in normalized):
-            return "read the first paragraph"
-            
-        return text
+        Generic/short trigger phrases are replaced with a full optimized prompt.
+        Longer, specific user sentences are kept verbatim with the intent appended.
+        Uses module-level _INTENT_PROMPTS and _GENERIC_TRIGGERS constants.
+        """
+        if intent not in _INTENT_PROMPTS:
+            return text
+        
+        cleaned_text = text.lower().strip()
+        triggers = _GENERIC_TRIGGERS.get(intent, set())
+        
+        # Replace with the optimized prompt if the command is a known generic trigger
+        # or is too short to carry useful context (<=3 words).
+        is_generic = any(trigger in cleaned_text for trigger in triggers) or len(cleaned_text.split()) <= 3
+        
+        if is_generic:
+            return _INTENT_PROMPTS[intent]
+        else:
+            return f"{text} (Instruction: {_INTENT_PROMPTS[intent]})"
 
     def _is_urgent(self, text: str) -> bool:
         """Determines if the command requires a fresh/forced capture."""

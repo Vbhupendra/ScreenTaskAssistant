@@ -76,13 +76,14 @@ class TrayManager:
 
     def update_state(self, state):
         """Update icon based on state: 'idle', 'listening', 'thinking', 'speaking'"""
-        if self._current_state == state and state != 'thinking':
+        thinking_states = ('thinking', 'analyzing_screen', 'understanding_context', 'identifying_problems', 'generating_solution')
+        if self._current_state == state and state not in thinking_states:
             return
             
         self._current_state = state
         self._pulsing = False # Stop any active pulse
         
-        if state == 'thinking':
+        if state in thinking_states:
             self._start_thinking_pulse()
         elif state == 'listening':
             self.icon.icon = self._generate_icon('red')

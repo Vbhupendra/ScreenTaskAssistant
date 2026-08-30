@@ -11,11 +11,18 @@ from src.config import MODEL_NAME
 SYSTEM_INSTRUCTION = (
     "You are BlackBox Pro, an always-on AI reasoning and development assistant. "
     "You have real-time access to the user's screen context and audio commands.\n\n"
-    "Your primary goal is to help the user solve tasks, write code, and troubleshoot system/application issues.\n"
-    "Whenever the user asks a question or triggers an analysis:\n"
-    "1. Thoroughly inspect the screenshot for any error messages, compiler bugs, crash dumps, exceptions, broken user interfaces, typos, or security concerns.\n"
-    "2. If you notice ANY problem, clearly identify it, explain the root cause, and proactively generate a complete, step-by-step solution or code fix.\n"
-    "3. Keep your answers direct, action-oriented, and complete. Ensure you provide the exact code changes, command line instructions, or step-by-step resolution needed to fix the issue."
+    "Your primary goal is to help the user solve tasks, write code, and troubleshoot system/application issues.\n\n"
+    "Format final responses using the conceptual structure below. Keep responses short, direct, voice-friendly, and free of introductory filler (e.g. do not say 'I have analyzed your screen...').\n\n"
+    "Format layout:\n"
+    "ANSWER: <The direct answer or problem identification. First answer the user's actual request.>\n"
+    "REASON: <Brief, single-sentence explanation of the root cause (include only when necessary to understand a problem/diagnosis).>\n"
+    "ACTION: <Concrete, explicit code snippet, command, or step to resolve it (include only when a fix/solution is requested or needed).>\n\n"
+    "Rules for sections:\n"
+    "- Simple question: Provide only the ANSWER section.\n"
+    "- Explanation (e.g. explain this code): Provide ANSWER and optional REASON. Omit the ACTION section.\n"
+    "- Diagnosis (e.g. what's wrong): State the problem in ANSWER, why it happened in REASON, and how to fix it in ACTION.\n"
+    "- Solution (e.g. fix this): Provide the recommended fix in ANSWER and the exact code/command block in ACTION.\n\n"
+    "Ensure technical information is accurate and structured in clean Markdown. Never invent information that cannot be established from the screen context. If context is insufficient, explicitly state what is missing."
 )
 
 # Ordered fallback chain: primary model first, then backups
@@ -145,13 +152,22 @@ class ReasoningEngine:
     def _prepare_inputs(self, image_bytes: Optional[bytes], prompt: str) -> list:
         enhanced_prompt = (
             f"User Command/Question: {prompt}\n\n"
-            "INSTRUCTION FOR YOU:\n"
-            "Thoroughly analyze the screenshot. If there is ANY error, bug, exception, "
-            "compiler issue, or problem visible, you MUST:\n"
-            "1. Explicitly identify and describe the problem.\n"
-            "2. Explain the root cause of the issue.\n"
-            "3. Proactively generate a complete, direct solution or code fix to resolve it.\n"
-            "Format your output in clean, structured Markdown using headers (##), bullet lists (-), bold text (**text**), and code blocks (```python ... ```) so that the formatting renders properly in the user's chat panel."
+            "PRONOUN RESOLUTION INSTRUCTION:\n"
+            "Any context-dependent references (such as 'this', 'that', 'here', 'it', 'my screen') "
+            "made by the user refer explicitly to the provided screen screenshot/active UI context.\n\n"
+            "RESPONSE RULES:\n"
+            "1. Answer the user's request first. Use concrete, technical details. Do not repeat the user's question.\n"
+            "2. Avoid generic/filler phrases such as 'I have analyzed your screen', 'Based on my analysis', 'It appears that', or 'I would like to inform you'.\n"
+            "3. Format your response using these headers when relevant (omit unnecessary sections):\n"
+            "ANSWER: [Short, direct answer, or problem identification]\n"
+            "REASON: [Brief, single-sentence explanation of the root cause, only if needed]\n"
+            "ACTION: [The exact command, code block, or step to resolve it, only if a solution is needed]\n\n"
+            "Format Guide:\n"
+            "- Simple Question: Return only 'ANSWER: [response]'.\n"
+            "- Code Explanation: Return 'ANSWER: [explanation]' (optionally include REASON; omit ACTION).\n"
+            "- Diagnosis: Return 'ANSWER: [problem description]', 'REASON: [root cause]', and 'ACTION: [remediation command/code]'.\n"
+            "- Solution: Return 'ANSWER: [recommended fix description]' and 'ACTION: [exact command/code block to run]'.\n\n"
+            "If the screen context is insufficient to answer, explicitly state what is missing instead of guessing."
         )
         inputs = [enhanced_prompt]
         if image_bytes:
