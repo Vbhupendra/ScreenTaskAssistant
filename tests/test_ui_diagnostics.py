@@ -46,8 +46,11 @@ class UITestBase(unittest.TestCase):
                     self._orig = json.load(f)
             except Exception:
                 pass
+        cfg = dict(self._orig)
+        if "api_key" not in cfg and "GEMINI_API_KEY" not in cfg:
+            cfg["GEMINI_API_KEY"] = ""
         with open(self._config_path, "w", encoding="utf-8") as f:
-            json.dump({"GEMINI_API_KEY": "test_key"}, f, indent=4)
+            json.dump(cfg, f, indent=4)
         self.overlay = OverlayWindow()
         self.overlay.root.deiconify()
         self.overlay.root.update()

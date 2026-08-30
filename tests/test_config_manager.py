@@ -13,6 +13,9 @@ if os.path.exists(backup):
 if os.path.exists(config_path):
     os.rename(config_path, backup)
 
+if os.path.exists(config_path):
+    os.remove(config_path)
+
 print("--- Test 1: _ensure_config_file() creates file with GEMINI_API_KEY template ---")
 # Call _ensure_config_file directly to confirm it creates the default template
 created_path = _ensure_config_file()
@@ -45,14 +48,21 @@ assert loaded == "MY_TEST_KEY_12345", f"FAIL: expected MY_TEST_KEY_12345, got {l
 print("  PASS")
 
 print()
-print("--- Test 4: load_api_key() on blank template returns empty string ---")
-# Write a blank template and verify load returns ""
-with open(config_path, "w") as f:
-    json.dump({"GEMINI_API_KEY": ""}, f, indent=4)
-loaded_blank = load_api_key()
-print(f"  Loaded from blank template: \"{loaded_blank}\"")
-assert loaded_blank == "", f"FAIL: expected empty string, got \"{loaded_blank}\""
-print("  PASS")
+print("--- Test 4: load_api_key() on blank template with no env vars returns empty string ---")
+# Write a blank template and verify load returns "" when environment vars are also blank
+orig_env_g = os.environ.pop("GOOGLE_API_KEY", None)
+orig_env_gm = os.environ.pop("GEMINI_API_KEY", None)
+
+try:
+    with open(config_path, "w") as f:
+        json.dump({"GEMINI_API_KEY": ""}, f, indent=4)
+    loaded_blank = load_api_key()
+    print(f"  Loaded from blank template: \"{loaded_blank}\"")
+    assert loaded_blank == "", f"FAIL: expected empty string, got \"{loaded_blank}\""
+    print("  PASS")
+finally:
+    if orig_env_g is not None: os.environ["GOOGLE_API_KEY"] = orig_env_g
+    if orig_env_gm is not None: os.environ["GEMINI_API_KEY"] = orig_env_gm
 
 # Restore original backup
 os.remove(config_path)

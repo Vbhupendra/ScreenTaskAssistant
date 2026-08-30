@@ -32,9 +32,12 @@ class TestProgressVisualStates(unittest.TestCase):
                     self._orig = json.load(f)
             except Exception:
                 pass
-        # Write a clean test config
+        # Write a clean test config while preserving existing key if present
+        cfg = dict(self._orig)
+        if "api_key" not in cfg and "GEMINI_API_KEY" not in cfg:
+            cfg["GEMINI_API_KEY"] = ""
         with open(self._config_path, "w", encoding="utf-8") as f:
-            json.dump({"GEMINI_API_KEY": "test_key"}, f, indent=4)
+            json.dump(cfg, f, indent=4)
 
         self.overlay = OverlayWindow()
         self.overlay.root.deiconify()

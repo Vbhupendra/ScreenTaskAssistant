@@ -58,27 +58,27 @@ def _ensure_config_file() -> str:
     # Step 4: File is guaranteed to exist — return the path
     return config_file_path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 def load_api_key() -> str:
     """
-    Loads the API key from the local OS-compliant config file.
-
-    Calls _ensure_config_file() first, which runs the full 4-step init
-    sequence (resolve → makedirs → create-if-missing → return path).
-    Only after that sequence completes successfully does this function
-    open and read the JSON, so a FileNotFoundError on fresh installs is
-    impossible.
+    Loads the API key from the local OS-compliant config file, with fallback
+    to environment variables (GOOGLE_API_KEY or GEMINI_API_KEY).
     """
-    # _ensure_config_file() guarantees the file exists before we read it
     config_path = _ensure_config_file()
+    key = ""
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Support both key names for forwards/backwards compatibility
-            key = data.get("api_key") or data.get("GEMINI_API_KEY") or ""
-            return key.strip()
+            key = (data.get("api_key") or data.get("GEMINI_API_KEY") or "").strip()
     except Exception as e:
         print(f"Error reading local config file: {e}")
-    return ""
+
+    if not key:
+        key = (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+
+    return key
 
 def save_api_key(api_key: str) -> bool:
     """

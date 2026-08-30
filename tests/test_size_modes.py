@@ -29,10 +29,13 @@ class TestSizeModes(unittest.TestCase):
             except Exception:
                 pass
                 
-        # Write clean temporary config for isolation
+        # Write clean temporary config for isolation while preserving existing key if present
         try:
+            cfg = dict(self.original_config)
+            if "api_key" not in cfg and "GEMINI_API_KEY" not in cfg:
+                cfg["GEMINI_API_KEY"] = ""
             with open(config_path, "w", encoding="utf-8") as f:
-                json.dump({"GEMINI_API_KEY": "test_key"}, f, indent=4)
+                json.dump(cfg, f, indent=4)
         except Exception:
             pass
 

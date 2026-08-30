@@ -25,16 +25,15 @@ SYSTEM_INSTRUCTION = (
     "Ensure technical information is accurate and structured in clean Markdown. Never invent information that cannot be established from the screen context. If context is insufficient, explicitly state what is missing."
 )
 
-# Ordered fallback chain: primary model first, then backups
-# gemini-2.5-flash is proven fast (~1-2s). gemini-2.0-flash as tertiary backup.
+# Ordered fallback chain: primary model first, then active backups
 MODEL_FALLBACK_CHAIN = [
-    MODEL_NAME,           # Primary: gemini-2.5-flash (from config) — 1-2s latency
-    "gemini-2.0-flash",   # Secondary fallback                       — 2-3s latency
-    "gemini-2.0-flash-lite", # Tertiary fallback                    — stable light fallback
+    MODEL_NAME,              # Primary: gemini-3.6-flash (from config) — fast (~1-2s)
+    "gemini-3.5-flash",       # Secondary fallback — robust backup
+    "gemini-3.1-flash-lite",  # Tertiary fallback — light/fast backup
 ]
 
 # Errors that should trigger a fallback to the next model
-FALLBACK_TRIGGERS = ["503", "UNAVAILABLE", "overloaded", "ResourceExhausted", "429", "quota"]
+FALLBACK_TRIGGERS = ["503", "UNAVAILABLE", "overloaded", "ResourceExhausted", "429", "quota", "404", "NOT_FOUND", "NotFound"]
 
 class ReasoningEngine:
     """Gemini-powered Multimodal Reasoning Engine with automatic model fallback."""
@@ -48,11 +47,11 @@ class ReasoningEngine:
             print(f"Warning during ReasoningEngine init: {e}")
 
     def _get_client(self):
-        """Dynamically loads the API key from the config storage and ensures client is initialized."""
-        from src.core.config_manager import load_api_key
-        key = load_api_key()
+        """Dynamically loads the API key from constructor parameter or config storage / env."""
+        key = getattr(self, '_initial_api_key', None)
         if not key:
-            key = getattr(self, '_initial_api_key', None)
+            from src.core.config_manager import load_api_key
+            key = load_api_key()
             
         if not key:
             raise ValueError("Google GenAI API key is missing. Please configure it via overlay.")
@@ -101,12 +100,13 @@ class ReasoningEngine:
                 return response.text
             except Exception as e:
                 error_str = str(e)
+                exc_type = type(e).__name__
                 if self._should_fallback(error_str):
-                    print(f">> Model '{model}' unavailable (503/quota). Putting on cooldown and trying next fallback...")
+                    print(f">> Reasoning Engine: Model '{model}' unavailable/deprecated ({exc_type}: {error_str[:120]}). Trying next fallback...")
                     self._failed_models_cooldown[model] = time.time() + 300
                     continue
                 else:
-                    print(f"Reasoning Error: {e}")
+                    print(f">> Reasoning Engine: Non-fallback error on model '{model}' ({exc_type}: {error_str[:120]}).")
                     return "I encountered an error while thinking. Please try again."
 
         # All models exhausted
@@ -128,7 +128,7 @@ class ReasoningEngine:
                     contents=contents,
                     config=config
                 )
-                # Consume the stream — this is where a 503 will actually be raised
+                # Consume the stream — this is where a 503/404 will actually be raised
                 for chunk in response:
                     if chunk.text:
                         yield chunk.text
@@ -136,12 +136,13 @@ class ReasoningEngine:
 
             except Exception as e:
                 error_str = str(e)
+                exc_type = type(e).__name__
                 if self._should_fallback(error_str):
-                    print(f">> Model '{model}' unavailable (503/quota). Putting on cooldown and trying next fallback...")
+                    print(f">> Reasoning Engine: Model '{model}' unavailable/deprecated ({exc_type}: {error_str[:120]}). Trying next fallback...")
                     self._failed_models_cooldown[model] = time.time() + 300
                     continue
                 else:
-                    print(f"Streaming Reasoning Error: {e}")
+                    print(f">> Reasoning Engine: Non-fallback error on model '{model}' ({exc_type}: {error_str[:120]}).")
                     yield "I encountered an error while thinking. Please try again."
                     return
 
