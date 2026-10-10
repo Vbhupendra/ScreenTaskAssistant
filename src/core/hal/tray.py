@@ -15,6 +15,7 @@ class TrayManager:
         self._pulse_thread = None
         self._pulsing = False
         self._current_state = 'idle'
+        self._icon_cache = {}
         self._setup_tray()
 
     def _setup_tray(self):
@@ -32,6 +33,10 @@ class TrayManager:
 
     def _generate_icon(self, color, size=(64, 64)):
         """Generate a sleek, vibrant circular icon."""
+        cache_key = (color, size)
+        if cache_key in getattr(self, '_icon_cache', {}):
+            return self._icon_cache[cache_key]
+
         image = Image.new('RGBA', size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         
@@ -52,6 +57,7 @@ class TrayManager:
         # Add a subtle gloss effect
         draw.ellipse([size[0]//4, size[1]//8, size[0]//1.5, size[1]//2], fill=(255, 255, 255, 60))
         
+        self._icon_cache[cache_key] = image
         return image
 
     def _on_show(self, icon, item):

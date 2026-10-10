@@ -13,6 +13,7 @@ def test_cooldown_mechanism():
     # 1. Initialize ReasoningEngine with a dummy key
     # We patch config_manager's load_api_key to return dummy key
     with patch('src.core.config_manager.load_api_key', return_value="DUMMY_KEY"), \
+         patch('src.core.reasoning.vlm.MODEL_FALLBACK_CHAIN', ["gemini-2.5-flash", "gemini-2.0-flash"]), \
          patch('google.genai.Client') as mock_client_class:
          
         # Mock client behavior

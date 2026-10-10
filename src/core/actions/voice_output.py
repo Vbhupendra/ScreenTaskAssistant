@@ -64,11 +64,9 @@ class VoiceOutput:
 
     def _speak_windows(self, text: str):
         """
-        Speak on Windows using PowerShell's built-in SpeechSynthesizer.
-        Uses Rate 0 (default speed) for maximum clarity.
-        Automatically selects the highest-quality installed voice available.
+        Speak on Windows using in-process SAPI.SpVoice via COM for zero latency,
+        with PowerShell subprocess fallback.
         """
-        # Sanitize text: remove characters that break PowerShell string embedding
         safe_text = (
             text
             .replace("'", " ")
@@ -81,13 +79,29 @@ class VoiceOutput:
         if not safe_text:
             return
 
-        # Use Rate 0 (default) for clearest output.
-        # Try to use the best available voice (David or Zira on Windows 10/11).
+        # Try fast in-process COM SAPI5 first
+        if not hasattr(self, '_sapi_synth'):
+            try:
+                import ctypes
+                ctypes.windll.ole32.CoInitialize(None)
+                import win32com.client
+                self._sapi_synth = win32com.client.Dispatch("SAPI.SpVoice")
+            except Exception as e:
+                print(f"SAPI5 init info: {e}")
+                self._sapi_synth = None
+
+        if self._sapi_synth:
+            try:
+                self._sapi_synth.Speak(safe_text)
+                return
+            except Exception as e:
+                print(f"SAPI5 speak fallback: {e}")
+
+        # Fallback to PowerShell process launch
         ps_cmd = (
             "Add-Type -AssemblyName System.Speech; "
             "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             "$synth.Rate = 0; "
-            # Prefer high-quality voices: Microsoft David Desktop > Zira Desktop > any installed
             "$voices = $synth.GetInstalledVoices() | Where-Object { $_.Enabled }; "
             "$preferred = $voices | Where-Object { $_.VoiceInfo.Name -like '*David*' -or $_.VoiceInfo.Name -like '*Zira*' }; "
             "if ($preferred) { $synth.SelectVoice($preferred[0].VoiceInfo.Name) }; "

@@ -30,8 +30,8 @@ MAX_HEIGHT = 660
 COMPACT_WIDTH  = 360
 COMPACT_HEIGHT = 130
 
-STANDARD_WIDTH  = 480
-STANDARD_HEIGHT = 390
+STANDARD_WIDTH  = 500
+STANDARD_HEIGHT = 400
 
 EXPANDED_WIDTH  = 680
 EXPANDED_HEIGHT = 540
@@ -238,13 +238,14 @@ class OverlayWindow:
         self.size_frame.pack(side=tk.RIGHT, padx=(0, 10))
 
         self.size_buttons = {}
+        _labels = {"COMPACT": "C", "AUTO": "A", "STANDARD": "S", "EXPANDED": "E"}
         for mode in ("COMPACT", "AUTO", "STANDARD", "EXPANDED"):
             btn = tk.Button(
-                self.size_frame, text=mode[0],
+                self.size_frame, text=_labels[mode],
                 bg=BG_CRUST, fg=FG_SUBTEXT,
                 activebackground=BG_SURFACE, activeforeground=FG_TEXT,
                 bd=0, font=("Segoe UI", 7, "bold"),
-                cursor="hand2", padx=3, pady=1,
+                cursor="hand2", padx=4, pady=1,
                 command=lambda m=mode: self.set_size_mode(m),
             )
             btn.pack(side=tk.LEFT, padx=1)
@@ -702,15 +703,18 @@ class OverlayWindow:
     # ── Queue processor ───────────────────────────────────────────────────────
 
     def _process_queue(self):
+        processed = False
         try:
             while True:
                 task = self.queue.get_nowait()
                 self._handle_task(task)
                 self.queue.task_done()
+                processed = True
         except queue.Empty:
             pass
         if self.root:
-            self.root.after(40, self._process_queue)
+            delay = 40 if processed else 100
+            self.root.after(delay, self._process_queue)
 
     def _handle_task(self, task):
         action = task[0]
@@ -719,7 +723,7 @@ class OverlayWindow:
             self.root.lift()
             self.root.attributes("-topmost", True)
         elif action == "hide":
-            if hasattr(self, "byok_frame") and self.byok_frame.winfo_manager():
+            if hasattr(self, "byok_frame") and self._is_widget_packed(self.byok_frame):
                 import os as _os; _os._exit(0)
             self.root.withdraw()
         elif action == "clear":
@@ -728,12 +732,29 @@ class OverlayWindow:
             self.text_area.delete("1.0", tk.END)
             self.text_area.config(state=tk.DISABLED)
         elif action == "append":
-            self.full_text += task[1]
-            self._render_text()
+            new_chunk = task[1]
+            self.full_text += new_chunk
+            # Fast incremental rendering during streaming to keep UI extremely responsive
+            if "\n" in new_chunk or "ANSWER:" in new_chunk or "ACTION:" in new_chunk or "```" in new_chunk:
+                self._render_text()
+            else:
+                self._append_chunk_fast(new_chunk)
         elif action == "status":
             self._update_status_ui(task[1])
         elif action == "show_key_input":
             self._show_byok(task[1])
+
+    def _append_chunk_fast(self, chunk: str):
+        """Append stream chunk directly to text widget without full re-parse overhead."""
+        ta = self.text_area
+        ta.config(state=tk.NORMAL)
+        ta.insert(tk.END, chunk, "normal")
+        ta.config(state=tk.DISABLED)
+        ta.see(tk.END)
+        if self.size_mode == "COMPACT" or (
+            self.size_mode == "AUTO" and self._get_auto_mode_for_content() == "COMPACT"
+        ):
+            self._update_compact_label()
 
     # ── Status / pipeline ─────────────────────────────────────────────────────
 
@@ -745,9 +766,10 @@ class OverlayWindow:
         self.status_indicator.config(text=label, fg=color)
         self._update_pipeline(key)
 
+        if key in ("completed", "idle"):
+            self._render_text()
+
         # Trigger geometry reflow only at terminal/idle states and query start states
-        # (completed/error/cancelled/idle/listening/analyzing_screen/understanding_context)
-        # or when a non-AUTO mode is active (user chose explicit mode)
         if key in (
             "completed", "error", "cancelled", "idle", 
             "listening", "analyzing_screen", "understanding_context"

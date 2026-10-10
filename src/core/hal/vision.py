@@ -66,18 +66,12 @@ class SoftwareCapture:
                 
                 # Check change via low-res thumbnail if not forced
                 if not force and self.last_frame_array is not None:
-                    # Simple fast downsampled check in PIL
                     small_curr = img.resize((64, 64), PILImage.NEAREST)
                     small_last = self.last_frame_array.resize((64, 64), PILImage.NEAREST)
-                    # Check if significantly changed
-                    diff = 0
-                    curr_data = list(small_curr.getdata())
-                    last_data = list(small_last.getdata())
-                    # Use actual channel count from pixel data (BGRA = 4, RGB = 3)
-                    num_channels = len(curr_data[0]) if curr_data and isinstance(curr_data[0], tuple) else 3
-                    for p1, p2 in zip(curr_data, last_data):
-                        diff += sum(abs(p1[i] - p2[i]) for i in range(min(3, num_channels)))
-                    mean_diff = diff / (64 * 64 * 3)
+                    from PIL import ImageChops, ImageStat
+                    diff_img = ImageChops.difference(small_curr, small_last)
+                    stat = ImageStat.Stat(diff_img)
+                    mean_diff = sum(stat.mean) / max(1, len(stat.mean))
                     if mean_diff <= 255 * 0.05:
                         return None
                 

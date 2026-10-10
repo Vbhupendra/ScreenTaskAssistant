@@ -24,7 +24,7 @@ class AudioWorker(threading.Thread):
                 time.sleep(0.5)
                 continue
                 
-            text = self.ear.get_command()
+            text = self.ear.get_command(timeout=0.5)
             if text:
                 intent = self.intent_classifier.classify(text)
                 
@@ -41,8 +41,6 @@ class AudioWorker(threading.Thread):
                 else:
                     # Optional: log other heard text for debugging
                     print(f"Heard (ignored): '{text}'")
-            
-            time.sleep(0.05) # Slightly faster polling for Pro version
 
     def pause_listening(self):
         self._is_listening = False
